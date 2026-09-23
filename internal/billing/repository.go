@@ -34,6 +34,8 @@ type Changes struct {
 	Plans             bool
 	Routes            bool
 	ConfigCredentials bool
+	ResetSnapshots    []string
+	UpstreamResets    []string
 
 	NormalRequestEvents []RequestEvent
 	RequestErrorEvents  []RequestErrorEvent
@@ -43,7 +45,7 @@ type Changes struct {
 const maxPendingRequestRecords = 1000
 
 func (c Changes) empty() bool {
-	return len(c.Keys) == 0 && !c.AllKeys && !c.Plans && !c.Routes && !c.ConfigCredentials &&
+	return len(c.Keys) == 0 && !c.AllKeys && !c.Plans && !c.Routes && !c.ConfigCredentials && len(c.ResetSnapshots) == 0 && len(c.UpstreamResets) == 0 &&
 		len(c.NormalRequestEvents) == 0 && len(c.RequestErrorEvents) == 0 && c.RequestEventCutoff.IsZero()
 }
 
@@ -56,6 +58,8 @@ func (c Changes) merge(next Changes) Changes {
 	}
 	merged := Changes{
 		AllKeys:             c.AllKeys || next.AllKeys,
+		ResetSnapshots:      mergeChangeIDs(c.ResetSnapshots, next.ResetSnapshots),
+		UpstreamResets:      mergeChangeIDs(c.UpstreamResets, next.UpstreamResets),
 		Plans:               c.Plans || next.Plans,
 		Routes:              c.Routes || next.Routes,
 		ConfigCredentials:   c.ConfigCredentials || next.ConfigCredentials,
@@ -69,14 +73,7 @@ func (c Changes) merge(next Changes) Changes {
 	if merged.AllKeys {
 		return merged.withBoundedRequestRecords()
 	}
-	seen := make(map[string]struct{}, len(c.Keys)+len(next.Keys))
-	for _, scope := range append(append([]string(nil), c.Keys...), next.Keys...) {
-		if _, exists := seen[scope]; exists {
-			continue
-		}
-		seen[scope] = struct{}{}
-		merged.Keys = append(merged.Keys, scope)
-	}
+	merged.Keys = mergeChangeIDs(c.Keys, next.Keys)
 	return merged.withBoundedRequestRecords()
 }
 
@@ -88,4 +85,18 @@ func (c Changes) withBoundedRequestRecords() Changes {
 		c.RequestErrorEvents = append([]RequestErrorEvent(nil), c.RequestErrorEvents[len(c.RequestErrorEvents)-maxPendingRequestRecords:]...)
 	}
 	return c
+}
+
+func mergeChangeIDs(first, second []string) []string {
+	seen := make(map[string]bool, len(first)+len(second))
+	var result []string
+	for _, values := range [][]string{first, second} {
+		for _, id := range values {
+			if !seen[id] {
+				seen[id] = true
+				result = append(result, id)
+			}
+		}
+	}
+	return result
 }

@@ -259,6 +259,10 @@ PLANS = [
         {"id": "budget", "name": "生产预算", "amount_usd": 1000,
          "period_seconds": 2592000, "cycle_anchor_at": iso((NOW + timedelta(days=15)).replace(hour=0))},
     ]},
+    {"id": "upstream-follow", "name": "上游跟随", "windows": [
+        {"id": "short", "name": "5 小时", "amount_usd": 20, "request_limit": 100, "period_seconds": 18000},
+        {"id": "week", "name": "7 天", "amount_usd": 300, "period_seconds": 604800},
+    ]},
     {"id": "project-credit", "name": "项目额度", "windows": [
         {"id": "budget", "name": "项目预算", "amount_usd": 100, "period_seconds": 864000},
     ]},
@@ -559,7 +563,7 @@ KEY_PROFILES = [
      "route_bindings": {"route_ids": ["analytics"], "models": [], "credential_ids": [], "credential_providers": []}},
     {"label": "客服助手", "plan_id": "production", "spent_usd": 241.36, "concurrency_limit": 8, "current_concurrency": 2,
      "route_bindings": {"route_ids": ["analytics"], "models": ["gpt-5.5"], "denied_models": ["gpt-image-2"], "credential_ids": [], "credential_providers": []}},
-    {"label": "文档生成", "plan_id": "engineering", "spent_usd": 56.48, "concurrency_limit": 3, "current_concurrency": 0,
+    {"label": "文档生成", "plan_id": "upstream-follow", "spent_usd": 56.48, "concurrency_limit": 3, "current_concurrency": 0,
      "route_bindings": {"route_ids": ["text-only"], "models": [], "credential_ids": [], "credential_providers": []}},
     {"label": "预发布环境", "plan_id": "project-credit", "spent_usd": 43.72, "concurrency_limit": 2, "current_concurrency": 1,
      "route_bindings": {"route_ids": ["economy"], "models": [], "credential_ids": [], "credential_providers": []}},
@@ -1331,7 +1335,9 @@ def payload_for(path, query):
         return {"entries": entries[:limit], "level_counts": counts,
                 "next_before_id": entries[limit - 1]["id"] if len(entries) > limit else 0}
     if path == f"{API_BASE}/auth-files":
-        return {"files": AUTH_FILES}
+        scope = query.get("scope", [""])[0]
+        index = next((i for i, key in enumerate(LIVE_KEYS) if key["scope"] == scope), None)
+        return {"files": account_auth_files(index) if index is not None else AUTH_FILES}
     if path == f"{API_BASE}/auth-files/quota":
         return auth_file_quota(query)
     if path == f"{API_BASE}/prices/reference":
@@ -1467,7 +1473,7 @@ class Handler(BaseHTTPRequestHandler):
             elif parsed.path.endswith("/subscription"):
                 key = LIVE_KEYS[index]
                 refresh_key_quota(key)
-                self.send_json(200, {"subscription": {"name": key["plan_name"], "unlimited": key["unlimited"], "blocked": key["blocked"], "windows": key["windows"], "retry_at": key.get("retry_at")}, "concurrency": {"limit": key["concurrency_limit"], "current": key["current_concurrency"]}})
+                self.send_json(200, {"subscription": {"name": key["plan_name"], "unlimited": key["unlimited"], "blocked": key["blocked"], "windows": key["windows"], "retry_at": key.get("retry_at"), "reset_follow": key.get("reset_follow")}, "concurrency": {"limit": key["concurrency_limit"], "current": key["current_concurrency"]}})
             elif parsed.path.endswith("/routing"):
                 self.send_json(200, account_routing_view(index))
             elif parsed.path.endswith("/prices"):
@@ -1581,6 +1587,36 @@ class Handler(BaseHTTPRequestHandler):
                     "long_context": None,
                 })
             self.send_json(200, {"deleted": model})
+        elif route == ("PUT", f"{API_BASE}/keys/reset-follow"):
+            body = json.loads(request_body or b"{}")
+            key = next((key for key in KEYS if key["scope"] == body.get("scope")), None)
+            if key is None:
+                self.send_json(404, {"error": {"message": "API key does not exist"}})
+                return
+            auth_index = body.get("auth_index", "")
+            if not auth_index:
+                key.pop("reset_follow", None)
+            else:
+                file = next((file for file in AUTH_FILES if file["auth_index"] == auth_index), None)
+                windows = key["windows"]
+                unmatched = next((window for window in windows if window["period_seconds"] not in (18000, 604800)), None)
+                if not windows or unmatched:
+                    unmatched = unmatched or {"name": "Subscription", "period_seconds": 0}
+                    name = json.dumps(unmatched["name"], ensure_ascii=False)
+                    seconds = unmatched["period_seconds"]
+                    self.send_json(400, {"error": {
+                        "message": f"Window {name} ({seconds} seconds) requires exactly one ordinary upstream window; found 0",
+                        "message_key": "backend.window_value_value_seconds_requires_exactly_one_ordinary_upstream_window_found_value",
+                        "message_params": {"v0": name, "v1": str(seconds), "v2": "0"},
+                    }})
+                    return
+                now = datetime.now(timezone.utc)
+                key["reset_follow"] = {"auth_index": auth_index, "provider": file["category"],
+                    "synced_at": iso(now), "attempted_at": iso(now), "windows": {
+                        window["id"]: {"upstream_id": "primary_window" if window["period_seconds"] == 18000 else "secondary_window",
+                            "period_seconds": window["period_seconds"], "next_reset_at": iso(now + timedelta(seconds=window["period_seconds"] // 2))}
+                        for window in windows}}
+            self.send_json(200, {"updated": True})
         elif route == ("POST", f"{API_BASE}/keys/reset"):
             body = json.loads(request_body or b"{}")
             targets = [key for key in KEYS if not key.get("deleted_at") and key["plan_id"]

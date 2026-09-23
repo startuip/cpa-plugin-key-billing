@@ -18,6 +18,7 @@ type KeyView struct {
 	ConcurrencyLimit   int           `json:"concurrency_limit"`
 	CurrentConcurrency int           `json:"current_concurrency"`
 	RouteBindings      RouteBindings `json:"route_bindings"`
+	ResetFollow        *ResetFollow  `json:"reset_follow,omitempty"`
 	QuotaView
 }
 
@@ -48,6 +49,7 @@ func (s *Store) KeyViews() []KeyView {
 func keyView(scope string, key *KeyState, plan Plan, currentConcurrency int, now time.Time) KeyView {
 	return KeyView{
 		Scope:              scope,
+		ResetFollow:        cloneResetFollow(key.ResetFollow),
 		Preview:            key.Preview,
 		Label:              key.Label,
 		InConfig:           key.InConfig,
@@ -195,8 +197,19 @@ func (s *Store) ResetQuota(req ResetRequest) (ResetResult, error) {
 		var changed []string
 		for _, scope := range scopes {
 			key := state.Keys[scope]
+			if key.ResetFollow != nil {
+				settleFollowCycles(key, s.Now())
+			}
 			count := len(key.Cycles)
 			key.Cycles = nil
+			if key.ResetFollow != nil {
+				plan, _ := state.FindPlan(key.PlanID)
+				activateCycles(key, plan, s.Now())
+				for id, cycle := range key.Cycles {
+					cycle.UsageSince = s.Now()
+					key.Cycles[id] = cycle
+				}
+			}
 			if count > 0 {
 				changed = append(changed, scope)
 				result.Keys++

@@ -13,7 +13,7 @@
 
 ## Features
 
-- Set spending, token, and request quotas for each API key, with independent or shared reset schedules.
+- Set spending, token, and request quotas for each API key, with independent, shared, or upstream Codex / Claude reset schedules.
 - Apply separate rates to requests that exceed a long-context input threshold.
 - Limit concurrent requests per API key.
 - Control access to models and upstream credentials with routing rules.
@@ -124,6 +124,20 @@ http(s)://<CLIProxyAPI address>/v0/resource/plugins/cpa-key-billing/ui#account
 - A manual quota reset keeps shared reset times unchanged. Independent cycles restart when the next request is admitted.
 - Custom model prices take precedence over models.dev reference prices. Requests are rejected if neither is available.
 - Request events are retained for 365 days.
+
+## Following upstream resets
+
+Choose **Follow upstream resets** on the API key page and select a Codex or Claude account allowed by that key's routing rules. Every subscription window must match exactly one ordinary upstream window with a valid future reset time. Claude supports 5-hour and 7-day windows; Codex uses explicitly reported durations. Code review and model-specific allowances are excluded. Enabling, switching, and disabling preserve current usage. Subscription and routing edits revalidate compatibility; disable following before unbinding a subscription.
+
+Each key keeps independent accounting; upstream percentages never determine its charges. Synchronization runs when following is enabled or switched, when the API key or subscription page is loaded or refreshed, and when account quota is explicitly queried. There is no background schedule: closing the page without further queries leaves the saved upstream state unchanged. Admission and quota reads apply each confirmed boundary once. A failed query preserves limits and usage. After consuming a known boundary, usage accumulates until a new valid time is available; recovery does not erase that usage. Successful Codex resets performed in this plugin immediately reset all following keys. Operation IDs are persisted to prevent duplicate resets, and refresh failures are reported separately from reset success.
+
+Quota queries, reset-follow synchronization, and manual Codex resets honor the auth file’s proxy setting: HTTP, HTTPS, SOCKS5, SOCKS5H, or explicit `direct` / `none`. Without an account override, requests continue through the host’s global proxy. Account proxy requests complete synchronously with a 30-second per-request timeout. A proxy failure never falls back to a direct connection or clears recorded usage.
+
+The feature is off by default. Existing keys retain their schedules. SQLite migrates to format 18 while preserving historical events and cycles. All synchronization finishes inside host calls. Reconfiguration, `plugin.quiesce`, and shutdown calls wait for in-flight plugin requests before switching or closing storage. Administrators can use `PUT /v0/management/plugins/cpa-key-billing/keys/reset-follow` with `{"scope":"<key identifier>","auth_index":"<host account identifier>"}`; an empty `auth_index` disables following.
+
+The pages request synchronization with `GET /keys?refresh_reset_follow=1` or the account endpoint `GET /subscription?refresh_reset_follow=1`. Without this parameter, these endpoints only read saved state and check confirmed boundaries. Each administrator refresh queries a shared account once; account users refresh only their own followed account, subject to routing permissions. A failed synchronization still returns the quota view with the error in its follow status.
+
+This approach does not depend on the disablement notification missing in v7.2.143. Following settings can remain enabled when disabling the plugin. Host exit may interrupt an unfinished page request; the last confirmed reset times and persisted usage are retained, and reopening or refreshing the page synchronizes again.
 
 ## Routing rules
 

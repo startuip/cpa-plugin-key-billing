@@ -22,6 +22,7 @@ func (d *DB) Load(requestEventCutoff, pluginLogCutoff time.Time) (billing.Snapsh
 		d.loadPrices,
 		d.loadRoutes,
 		d.loadConfigCredentials,
+		d.loadResetFollow,
 	} {
 		if err := load(state); err != nil {
 			return billing.Snapshot{}, err
@@ -75,6 +76,11 @@ func saveStateTables(tx *sql.Tx, state *billing.State, changes billing.Changes) 
 	}
 	if changes.Routes {
 		if err := replaceRoutes(tx, state); err != nil {
+			return err
+		}
+	}
+	if len(changes.ResetSnapshots) > 0 || len(changes.UpstreamResets) > 0 {
+		if err := saveResetFollow(tx, state, changes); err != nil {
 			return err
 		}
 	}

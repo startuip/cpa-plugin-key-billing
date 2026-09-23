@@ -12,6 +12,10 @@ import (
 )
 
 type App struct {
+	lifecycleMu           sync.Mutex
+	callsMu               sync.RWMutex
+	quiesced              bool
+	resetAccounts         sync.Map
 	store                 *billing.Store
 	hostCaller            HostCaller
 	admissionsMu          sync.Mutex
@@ -61,6 +65,23 @@ func (a *App) HandleMethod(method string, request []byte) (response []byte, err 
 			}
 		}
 	}()
+	if method == MethodPluginRegister || method == MethodPluginReconfigure || method == MethodPluginQuiesce {
+		a.lifecycleMu.Lock()
+		defer a.lifecycleMu.Unlock()
+		a.callsMu.Lock()
+		defer a.callsMu.Unlock()
+		if method == MethodPluginQuiesce {
+			a.quiesced = true
+			return OKEnvelope(struct{}{})
+		}
+		a.quiesced = false
+		return a.handleMethod(method, request)
+	}
+	a.callsMu.RLock()
+	defer a.callsMu.RUnlock()
+	if a.quiesced {
+		return ErrorEnvelope("quiesced", "Plugin is quiesced", http.StatusServiceUnavailable), nil
+	}
 	return a.handleMethod(method, request)
 }
 
@@ -95,6 +116,11 @@ func (a *App) Shutdown() {
 	if a == nil || a.store == nil {
 		return
 	}
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	a.callsMu.Lock()
+	defer a.callsMu.Unlock()
+	a.quiesced = true
 	a.store.Close()
 }
 

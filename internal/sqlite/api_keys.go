@@ -12,14 +12,15 @@ import (
 const insertKey = `
 INSERT INTO api_keys (
 	scope, preview, label, in_config, deleted_at, plan_id, concurrency_limit,
-	cycles_json, route_bindings_json
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	cycles_json, route_bindings_json, reset_follow_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT(scope) DO UPDATE SET
 	preview = excluded.preview, label = excluded.label, in_config = excluded.in_config,
 	deleted_at = excluded.deleted_at, plan_id = excluded.plan_id,
 	concurrency_limit = excluded.concurrency_limit,
 	cycles_json = excluded.cycles_json,
-	route_bindings_json = excluded.route_bindings_json`
+	route_bindings_json = excluded.route_bindings_json,
+	reset_follow_json = excluded.reset_follow_json`
 
 func saveKey(tx *sql.Tx, scope string, key *billing.KeyState) error {
 	if key == nil {
@@ -40,9 +41,17 @@ func saveKey(tx *sql.Tx, scope string, key *billing.KeyState) error {
 	if err != nil {
 		return err
 	}
+	var follow *billing.StoredResetFollow
+	if key.ResetFollow != nil {
+		follow = &billing.StoredResetFollow{ResetFollow: key.ResetFollow, CredentialRef: key.ResetFollow.CredentialRef}
+	}
+	rawFollow, err := json.Marshal(follow)
+	if err != nil {
+		return err
+	}
 	_, errKey := tx.Exec(insertKey,
 		scope, key.Preview, key.Label, key.InConfig, nanos(key.DeletedAt), key.PlanID, key.ConcurrencyLimit,
-		string(rawCycles), string(bindings))
+		string(rawCycles), string(bindings), string(rawFollow))
 	if errKey != nil {
 		return fmt.Errorf("Save API key %s: %w", scope, errKey)
 	}
@@ -57,7 +66,7 @@ func (d *DB) loadKeys(state *billing.State) error {
 	}
 	rows, errQuery := d.db.Query(`
 		SELECT scope, preview, label, in_config, deleted_at, plan_id, concurrency_limit,
-			cycles_json, route_bindings_json
+			cycles_json, route_bindings_json, reset_follow_json
 		FROM api_keys`)
 	if errQuery != nil {
 		return fmt.Errorf("Read API key list: %w", errQuery)
@@ -70,9 +79,10 @@ func (d *DB) loadKeys(state *billing.State) error {
 			deletedAt    int64
 			cyclesJSON   string
 			bindingsJSON string
+			followJSON   string
 		)
 		if errScan := rows.Scan(&scope, &key.Preview, &key.Label, &key.InConfig, &deletedAt, &key.PlanID, &key.ConcurrencyLimit,
-			&cyclesJSON, &bindingsJSON); errScan != nil {
+			&cyclesJSON, &bindingsJSON, &followJSON); errScan != nil {
 			return fmt.Errorf("Read API key list: %w", errScan)
 		}
 		if strings.TrimSpace(scope) == "" || strings.TrimSpace(key.Preview) == "" {
@@ -84,6 +94,17 @@ func (d *DB) loadKeys(state *billing.State) error {
 		}
 		if key.Cycles == nil {
 			return fmt.Errorf("Quota cycles must be a JSON object")
+		}
+		var follow *billing.StoredResetFollow
+		if err := json.Unmarshal([]byte(followJSON), &follow); err != nil {
+			return fmt.Errorf("Read reset following: %w", err)
+		}
+		if follow != nil {
+			if follow.ResetFollow == nil || follow.AuthIndex == "" || len(follow.Windows) == 0 {
+				return fmt.Errorf("Invalid reset following configuration")
+			}
+			key.ResetFollow = follow.ResetFollow
+			key.ResetFollow.CredentialRef = follow.CredentialRef
 		}
 		plan, _ := state.FindPlan(key.PlanID)
 		if err := key.ValidateCycles(plan); err != nil {

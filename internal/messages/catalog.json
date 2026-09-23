@@ -405,11 +405,16 @@
   },
   "Upstream returned HTTP %d: Credentials are invalid or expired": {
     "key": "backend.upstream_credentials_invalid",
-    "formats": ["%d"]
+    "formats": [
+      "%d"
+    ]
   },
   "Upstream returned HTTP %d: Credentials are invalid or expired: %s": {
     "key": "backend.upstream_credentials_invalid_detail",
-    "formats": ["%d", "%s"]
+    "formats": [
+      "%d",
+      "%s"
+    ]
   },
   "Upstream returned HTTP %d: %s": {
     "key": "backend.upstream_returned_http_value_value",
@@ -588,6 +593,66 @@
   },
   "A credential category cannot be both allowed and denied": {
     "key": "backend.category_permission_conflict",
+    "formats": []
+  },
+  "Reset following requires a subscription plan": {
+    "key": "backend.reset_following_requires_a_subscription_plan",
+    "formats": []
+  },
+  "Reset following supports only Codex and Claude accounts": {
+    "key": "backend.reset_following_supports_only_codex_and_claude_accounts",
+    "formats": []
+  },
+  "Upstream reset synchronization failed: %s": {
+    "key": "backend.upstream_reset_synchronization_failed_value",
+    "formats": [
+      "%s"
+    ]
+  },
+  "Window %q (%d seconds) requires exactly one ordinary upstream window; found %d": {
+    "key": "backend.window_value_value_seconds_requires_exactly_one_ordinary_upstream_window_found_value",
+    "formats": [
+      "%q",
+      "%d",
+      "%d"
+    ]
+  },
+  "Window %q has no valid future upstream reset time": {
+    "key": "backend.window_value_has_no_valid_future_upstream_reset_time",
+    "formats": [
+      "%q"
+    ]
+  },
+  "The followed account must be allowed by this API key's routing rules": {
+    "key": "backend.the_followed_account_must_be_allowed_by_this_api_key_s_routing_rules",
+    "formats": []
+  },
+  "Waiting for upstream reset times": {
+    "key": "backend.waiting_for_upstream_reset_times",
+    "formats": []
+  },
+  "The followed upstream account is unavailable": {
+    "key": "backend.the_followed_upstream_account_is_unavailable",
+    "formats": []
+  },
+  "Invalid auth file proxy; use HTTP, HTTPS, SOCKS5, SOCKS5H, direct, or none": {
+    "key": "backend.invalid_auth_file_proxy",
+    "formats": []
+  },
+  "Auth file proxy request timed out": {
+    "key": "backend.auth_file_proxy_request_timed_out",
+    "formats": []
+  },
+  "Auth file proxy request failed; check the proxy connection and credentials": {
+    "key": "backend.auth_file_proxy_request_failed",
+    "formats": []
+  },
+  "Could not read the quota response through the auth file proxy": {
+    "key": "backend.auth_file_proxy_response_read_failed",
+    "formats": []
+  },
+  "Quota response exceeds the size limit": {
+    "key": "backend.quota_response_exceeds_size_limit",
     "formats": []
   }
 }

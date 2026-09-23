@@ -15,7 +15,7 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
-const schemaVersion = 17
+const schemaVersion = 18
 
 type DB struct {
 	db   *sql.DB
@@ -67,6 +67,11 @@ func (d *DB) initSchema(tx *sql.Tx) error {
 		if err := migrateToV17(tx, version); err != nil {
 			return err
 		}
+		fallthrough
+	case 17:
+		if err := migrateResetFollow(tx); err != nil {
+			return err
+		}
 	case schemaVersion:
 		return nil
 	case 0:
@@ -78,7 +83,7 @@ func (d *DB) initSchema(tx *sql.Tx) error {
 		if existingTables != 0 {
 			return fmt.Errorf("Billing database %s uses an unsupported format; select another data file with state_file", d.path)
 		}
-		if _, err := tx.Exec(schema); err != nil {
+		if _, err := tx.Exec(schema + resetFollowSchema); err != nil {
 			return fmt.Errorf("Initialize billing database %s: %w", d.path, err)
 		}
 	default:

@@ -24,13 +24,16 @@ type quotaUsage struct {
 
 // UsageSince excludes requests admitted before binding or an administrative reset.
 type QuotaCycle struct {
-	PlanID       string    `json:"plan_id,omitempty"`
-	StartAt      time.Time `json:"start_at,omitzero"`
-	EndAt        time.Time `json:"end_at,omitzero"`
-	UsageSince   time.Time `json:"usage_since,omitzero"`
-	SpentUSD     float64   `json:"spent_usd"`
-	UsedTokens   int64     `json:"used_tokens"`
-	UsedRequests int64     `json:"used_requests"`
+	PlanID string `json:"plan_id,omitempty"`
+	// ScheduleOverride preserves the current counters until the first native
+	// boundary after reset following is disabled. Later cycles use the plan.
+	ScheduleOverride bool      `json:"schedule_override,omitempty"`
+	StartAt          time.Time `json:"start_at,omitzero"`
+	EndAt            time.Time `json:"end_at,omitzero"`
+	UsageSince       time.Time `json:"usage_since,omitzero"`
+	SpentUSD         float64   `json:"spent_usd"`
+	UsedTokens       int64     `json:"used_tokens"`
+	UsedRequests     int64     `json:"used_requests"`
 }
 
 // JSON numbers retain integer counters without float conversion.
@@ -78,6 +81,7 @@ func (w QuotaWindow) view(cycle QuotaCycle) QuotaWindowView {
 }
 
 func quotaView(key *KeyState, plan Plan, now time.Time) QuotaView {
+	unknownRetry := false
 	view := QuotaView{Windows: make([]QuotaWindowView, 0, len(plan.Windows)), Unlimited: plan.ID == ""}
 	for _, window := range plan.Windows {
 		cycle := key.Cycles[window.ID]
@@ -87,11 +91,15 @@ func quotaView(key *KeyState, plan Plan, now time.Time) QuotaView {
 		item := window.view(cycle)
 		if item.Blocked {
 			view.Blocked = true
+			unknownRetry = unknownRetry || item.EndAt.IsZero()
 			if item.EndAt.After(view.RetryAt) {
 				view.RetryAt = item.EndAt
 			}
 		}
 		view.Windows = append(view.Windows, item)
+	}
+	if unknownRetry {
+		view.RetryAt = time.Time{}
 	}
 	return view
 }
@@ -132,8 +140,12 @@ func (b QuotaBalance) Description() string {
 	return fmt.Sprintf("%s %s / %s", b.Metric, b.Used, b.Limit)
 }
 
-// Expiration never starts another window; only admission can do that.
+// Native expiration waits for admission; followed expiration consumes a known
+// boundary and retains a cycle to accumulate usage while awaiting synchronization.
 func settleExpiredCycles(key *KeyState, now time.Time) bool {
+	if key.ResetFollow != nil {
+		return settleFollowCycles(key, now)
+	}
 	changed := false
 	for id, cycle := range key.Cycles {
 		if !now.Before(cycle.EndAt) {
@@ -151,7 +163,11 @@ func activateCycles(key *KeyState, plan Plan, now time.Time) bool {
 	changed := false
 	for _, window := range plan.Windows {
 		if _, exists := key.Cycles[window.ID]; !exists {
-			key.Cycles[window.ID] = window.newCycle(plan.ID, now)
+			cycle := window.newCycle(plan.ID, now)
+			if key.ResetFollow != nil {
+				cycle.EndAt = key.ResetFollow.Windows[window.ID].NextResetAt
+			}
+			key.Cycles[window.ID] = cycle
 			changed = true
 		}
 	}
@@ -162,17 +178,25 @@ func (key *KeyState) ValidateCycles(plan Plan) error {
 	if key.PlanID != "" && plan.ID != key.PlanID {
 		return invalidf("The subscription plan bound to this API key does not exist")
 	}
+	if err := key.validateResetFollow(plan); err != nil {
+		return err
+	}
 	for id, cycle := range key.Cycles {
 		index := slices.IndexFunc(plan.Windows, func(window QuotaWindow) bool { return window.ID == id })
-		if index < 0 || cycle.PlanID != key.PlanID || cycle.StartAt.IsZero() || cycle.EndAt.IsZero() ||
-			!cycle.EndAt.Equal(cycle.StartAt.Add(time.Duration(plan.Windows[index].PeriodSeconds)*time.Second)) ||
-			cycle.SpentUSD < 0 || math.IsNaN(cycle.SpentUSD) || math.IsInf(cycle.SpentUSD, 0) ||
-			cycle.UsedRequests < 0 || cycle.UsedTokens < 0 {
+		if index < 0 || cycle.PlanID != key.PlanID || cycle.StartAt.IsZero() ||
+			cycle.SpentUSD < 0 || math.IsNaN(cycle.SpentUSD) || math.IsInf(cycle.SpentUSD, 0) || cycle.UsedRequests < 0 || cycle.UsedTokens < 0 {
 			return invalidf("Invalid quota cycle data for this API key")
 		}
+		if !cycle.EndAt.IsZero() && !cycle.EndAt.After(cycle.StartAt) ||
+			!cycle.UsageSince.IsZero() && (cycle.UsageSince.Before(cycle.StartAt) || !cycle.EndAt.IsZero() && !cycle.UsageSince.Before(cycle.EndAt)) {
+			return invalidf("Invalid quota cycle data for this API key")
+		}
+		if key.ResetFollow != nil {
+			continue
+		}
 		window := plan.Windows[index]
-		if !window.CycleAnchorAt.IsZero() && !window.newCycle(plan.ID, cycle.StartAt).StartAt.Equal(cycle.StartAt) ||
-			!cycle.UsageSince.IsZero() && (cycle.UsageSince.Before(cycle.StartAt) || !cycle.UsageSince.Before(cycle.EndAt)) {
+		if cycle.EndAt.IsZero() || !cycle.ScheduleOverride && (!cycle.EndAt.Equal(cycle.StartAt.Add(time.Duration(window.PeriodSeconds)*time.Second)) ||
+			!window.CycleAnchorAt.IsZero() && !window.newCycle(plan.ID, cycle.StartAt).StartAt.Equal(cycle.StartAt)) {
 			return invalidf("Invalid quota cycle data for this API key")
 		}
 	}
@@ -185,7 +209,7 @@ func (key *KeyState) chargeCycles(at time.Time, usage quotaUsage) {
 		return
 	}
 	for id, cycle := range key.Cycles {
-		if cycle.PlanID != key.PlanID || at.Before(cycle.StartAt) || at.Before(cycle.UsageSince) || !at.Before(cycle.EndAt) {
+		if cycle.PlanID != key.PlanID || at.Before(cycle.StartAt) || at.Before(cycle.UsageSince) || key.ResetFollow == nil && !at.Before(cycle.EndAt) {
 			continue
 		}
 		// Keep all dimensions, including currently disabled limits, so changing

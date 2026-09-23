@@ -31,6 +31,7 @@ const (
 	routeKeysRoutes             = "/keys/routes"
 	routeKeysBind               = "/keys/bind"
 	routeKeysUnbind             = "/keys/unbind"
+	routeKeysResetFollow        = "/keys/reset-follow"
 	routeKeysReset              = "/keys/reset"
 	routeKeysLabel              = "/keys/label"
 	routeKeysConcurrency        = "/keys/concurrency"
@@ -52,7 +53,10 @@ type managementEndpoint struct {
 }
 
 var managementEndpoints = []managementEndpoint{
-	{http.MethodGet, routeKeys, "View API key status", func(a *App, _ ManagementRequest) ManagementResponse {
+	{http.MethodGet, routeKeys, "View API key status", func(a *App, req ManagementRequest) ManagementResponse {
+		if req.Query.Get("refresh_reset_follow") == "1" {
+			a.refreshResetFollowers(req, viewAccess{})
+		}
 		return JSONResponse(http.StatusOK, map[string]any{"keys": a.keyRows()})
 	}},
 	{http.MethodGet, routePlans, "View subscription plans", func(a *App, _ ManagementRequest) ManagementResponse {
@@ -77,6 +81,7 @@ var managementEndpoints = []managementEndpoint{
 	{http.MethodPut, routeKeysRoutes, "Update API key routing bindings", (*App).setKeyRoutes},
 	{http.MethodPost, routeKeysBind, "Bind API key to subscription plan", (*App).bindKey},
 	{http.MethodPost, routeKeysUnbind, "Unbind API key from subscription plan", (*App).unbindKey},
+	{http.MethodPut, routeKeysResetFollow, "Follow upstream quota reset times", (*App).setResetFollow},
 	{http.MethodPost, routeKeysReset, "Reset subscription quotas for selected API keys", (*App).resetKeys},
 	{http.MethodPost, routeKeysLabel, "Set API key label", (*App).labelKey},
 	{http.MethodPost, routeKeysConcurrency, "Set API key concurrency limit", (*App).setKeyConcurrency},
@@ -92,7 +97,7 @@ var managementEndpoints = []managementEndpoint{
 	{http.MethodGet, routeAnalysis, "View usage distribution", func(a *App, req ManagementRequest) ManagementResponse { return a.analysis(req, viewAccess{}) }},
 	{http.MethodGet, routePluginLogs, "List plugin logs with pagination", (*App).listPluginLogs},
 	{http.MethodDelete, routePluginLogs, "Clear plugin logs", func(a *App, _ ManagementRequest) ManagementResponse { return a.clearPluginLogs() }},
-	{http.MethodGet, routeAuthFiles, "View auth files", func(a *App, _ ManagementRequest) ManagementResponse { return a.authFiles(viewAccess{}) }},
+	{http.MethodGet, routeAuthFiles, "View auth files", (*App).resetFollowAuthFiles},
 	{http.MethodGet, routeAuthQuota, "Query auth file quotas", func(a *App, req ManagementRequest) ManagementResponse { return a.authQuota(req, viewAccess{}) }},
 	{http.MethodPost, routeAuthQuotaReset, "Reset auth file quotas", func(a *App, req ManagementRequest) ManagementResponse { return a.authQuotaReset(req, viewAccess{}) }},
 }
@@ -106,7 +111,11 @@ var resourceEndpoints = []resourceEndpoint{
 	{routeProfile, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {
 		return a.accountProfile(access)
 	}},
-	{routeSubscription, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {
+	{routeSubscription, func(a *App, req ManagementRequest, access viewAccess) ManagementResponse {
+		if req.Query.Get("refresh_reset_follow") == "1" {
+			a.refreshResetFollowers(req, access)
+			access.Key, access.Tracked = a.store.KeyViewForScope(access.Scope)
+		}
 		return a.accountSubscription(access)
 	}},
 	{routeRouting, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {

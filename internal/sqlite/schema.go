@@ -35,6 +35,7 @@ CREATE TABLE api_keys (
 	deleted_at            INTEGER NOT NULL DEFAULT 0,
 	plan_id               TEXT    NOT NULL DEFAULT '',
 	concurrency_limit     INTEGER NOT NULL DEFAULT 0,
+	reset_follow_json     TEXT    NOT NULL DEFAULT 'null',
 	cycles_json           TEXT    NOT NULL DEFAULT '{}',
 	route_bindings_json   TEXT    NOT NULL DEFAULT '{}'
 );
@@ -147,5 +148,16 @@ CREATE TABLE plugin_logs (
 	at      INTEGER NOT NULL,
 	level   TEXT    NOT NULL DEFAULT '',
 	message TEXT    NOT NULL DEFAULT ''
+);
+`
+
+const resetFollowSchema = `
+CREATE TABLE reset_snapshots (
+ auth_index TEXT PRIMARY KEY,
+ snapshot_json TEXT NOT NULL
+);
+CREATE TABLE upstream_resets (
+ operation_key TEXT PRIMARY KEY,
+ operation_json TEXT NOT NULL
 );
 `

@@ -51,6 +51,12 @@ func maskAPIKeyPayload(payload any) (any, bool) {
 		return value, true
 	case accountSubscriptionResponse:
 		value.Subscription.Name = maskEmails(value.Subscription.Name)
+		if follow := value.Subscription.ResetFollow; follow != nil {
+			masked := *follow
+			masked.Error.Message = maskMessage(follow.Error.Message)
+			masked.Error.Text = maskEmails(follow.Error.Text)
+			value.Subscription.ResetFollow = &masked
+		}
 		return value, true
 	case accountRoutingResponse:
 		for i := range value.Credentials {

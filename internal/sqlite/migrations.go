@@ -483,3 +483,11 @@ func migrateQuotaWindows(tx *sql.Tx) error {
         ALTER TABLE api_keys DROP COLUMN cycle_spent_usd;`)
 	return err
 }
+
+// Version 18 adds reset following without altering historical events or cycles.
+func migrateResetFollow(tx *sql.Tx) error {
+	if _, err := tx.Exec("ALTER TABLE api_keys ADD COLUMN reset_follow_json TEXT NOT NULL DEFAULT 'null';" + resetFollowSchema); err != nil {
+		return fmt.Errorf("Add upstream reset following: %w", err)
+	}
+	return nil
+}

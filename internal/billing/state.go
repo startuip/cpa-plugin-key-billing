@@ -12,6 +12,8 @@ type State struct {
 	Keys              map[string]*KeyState
 	Routes            []Route
 	ConfigCredentials map[string]ConfigCredential
+	ResetSnapshots    map[string]ResetSnapshot
+	UpstreamResets    map[string]UpstreamReset
 }
 
 type ConfigCredential struct {
@@ -23,6 +25,8 @@ type ConfigCredential struct {
 func NewState() *State {
 	return &State{
 		Prices:            make(map[string]CustomPrice),
+		ResetSnapshots:    make(map[string]ResetSnapshot),
+		UpstreamResets:    make(map[string]UpstreamReset),
 		Keys:              make(map[string]*KeyState),
 		ConfigCredentials: make(map[string]ConfigCredential),
 	}
@@ -59,4 +63,5 @@ type KeyState struct {
 	ConcurrencyLimit int                   `json:"concurrency_limit,omitempty"`
 	RouteBindings    RouteBindings         `json:"route_bindings"`
 	Cycles           map[string]QuotaCycle `json:"cycles"`
+	ResetFollow      *ResetFollow          `json:"reset_follow,omitempty"`
 }

@@ -1401,6 +1401,8 @@
       .hover-tooltip-heading { font-size: 11px; color: var(--text-tertiary); }
       .hover-tooltip-body { margin: 0; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
       .key-route-more { color: var(--text-tertiary); line-height: 1; }
+      .reset-follow-status { display: grid; gap: 5px; margin-top: 8px; white-space: normal; overflow-wrap: anywhere; }
+      #reset-follow-status { margin: 12px 0; }
       .key-route-actions { margin-top: 5px; }
       .key-route-actions > button.link { min-height: 22px; font-size: 12px; }
       .compact-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
@@ -2634,6 +2636,21 @@
     </footer>
 
     <div id="notice" class="notice" popover="manual"></div>
+
+    <dialog id="reset-follow-dialog" class="settings-dialog">
+      <h2 data-i18n="ui.reset_follow">Follow upstream resets</h2>
+      <div class="editor-state notice hidden"></div>
+      <p class="small muted" data-i18n="ui.reset_follow_help">Keep this key's usage independent and follow the account's ordinary reset windows. Saving checks every subscription window. Current usage is preserved.</p>
+      <label class="field">
+        <span data-i18n="ui.reset_follow_account">Upstream account</span>
+        <span class="native-select"><select id="reset-follow-account"></select></span>
+      </label>
+      <div id="reset-follow-status" class="small"></div>
+      <div class="row dialog-actions">
+        <button id="reset-follow-cancel" data-i18n="ui.cancel">Cancel</button>
+        <button id="reset-follow-save" class="primary" data-i18n="ui.save">Save</button>
+      </div>
+    </dialog>
 
     <dialog id="price-dialog" class="settings-dialog">
       <h2 id="price-dialog-title" data-i18n="ui.edit_model_pricing">Edit model pricing</h2>
@@ -3980,7 +3997,7 @@
       }
 
       async function fetchAdminCollection(name) {
-        const result = await plugin("GET", "/" + name);
+        const result = await plugin("GET", "/" + name + (name === "keys" ? "?refresh_reset_follow=1" : ""));
         return requireArray(result?.[name], resources.admin[name].label);
       }
 
@@ -4156,7 +4173,7 @@
       }
 
       async function fetchAccountData(name) {
-        const result = requireObject(await accountAPI("/" + name), name);
+        const result = requireObject(await accountAPI("/" + name + (name === "subscription" ? "?refresh_reset_follow=1" : "")), name);
         if (name === "profile" && typeof result.tracked !== "boolean") throw new UIError(m("ui.invalid_account_profile_response"));
         if (name === "subscription") {
           requireObject(result.subscription, m("ui.subscription"));
@@ -4643,7 +4660,7 @@
         );
         const target = $("account-windows");
         if (renderDataPending(target, [data], m("ui.loading_subscription_status"))) return;
-        target.replaceChildren(renderQuotaWindows(subscription, true));
+        target.replaceChildren(renderQuotaWindows(subscription, true), renderResetFollow(subscription));
       }
 
       function renderAccountModels() {
@@ -5826,6 +5843,14 @@
         if (!canResetAuthQuota(file, account)) return;
         const owner = account ? accountUIState : adminUIState;
         const generation = authQuotaGeneration[account ? "account" : "admin"], index = file.auth_index;
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const resetID = Array.from(bytes, (byte, i) => ([4, 6, 8, 10].includes(i) ? "-" : "") + byte.toString(16).padStart(2, "0")).join(
+          ""
+        );
+        let resetRefreshError;
+        let resetAttempted = false;
         await openActionDialog(
           m("ui.reset_codex_quota"),
           m("ui.available_resets_value_use_one_reset_now", {
@@ -5834,7 +5859,7 @@
           }),
           undefined,
           async () => {
-            if (!authQuotaCacheCurrent(account, owner, generation, index) || !canResetAuthQuota(file, account)) {
+            if (!authQuotaCacheCurrent(account, owner, generation, index) || (!resetAttempted && !canResetAuthQuota(file, account))) {
               throw new UIError(m("ui.the_auth_file_or_quota_changed_close_this_dialog_update_the_quota_and_try_again"));
             }
             owner.authQuotaLoading.add(index);
@@ -5850,18 +5875,14 @@
                 auth_revision: file.cache_revision || ""
               });
               const path = "/auth-files/quota/reset?" + params;
-              // getRandomValues also works on HTTP installations where randomUUID is unavailable.
-              const bytes = crypto.getRandomValues(new Uint8Array(16));
-              bytes[6] = (bytes[6] & 0x0f) | 0x40;
-              bytes[8] = (bytes[8] & 0x3f) | 0x80;
-              const resetID = Array.from(
-                bytes,
-                (byte, index) => ([4, 6, 8, 10].includes(index) ? "-" : "") + byte.toString(16).padStart(2, "0")
-              ).join("");
               const opts = { timeoutMS: AUTH_QUOTA_TIMEOUT_MS, headers: { "X-Quota-Reset-ID": resetID }, keepSessionOnForbidden: account };
+              resetAttempted = true;
               const result = account ? await accountAPI(path, opts) : await plugin("POST", path, null, opts);
               if (result?.reset !== true) throw new UIError(m("ui.reset_was_not_confirmed_update_the_quota_to_check_its_current_status"));
               resetConfirmed = true;
+              resetRefreshError = result.refresh_error;
+              if (resetRefreshError)
+                owner.authQuotaErrors.set(index, window.billingI18n.serverMessage(resetRefreshError, resetRefreshError.message));
             } finally {
               if (authQuotaCacheCurrent(account, owner, generation, index)) {
                 owner.authQuotaLoading.delete(index);
@@ -5873,7 +5894,7 @@
             if (!authQuotaCacheCurrent(account, owner, generation, index)) return;
             await refreshAuthQuota(file, account);
             if (authQuotaCacheCurrent(account, owner, generation, index)) {
-              const failed = owner.authQuotaErrors.has(index);
+              const failed = !!resetRefreshError || owner.authQuotaErrors.has(index);
               notify(
                 failed
                   ? m("ui.quota_reset_but_refresh_failed_please_update_the_quota_manually")
@@ -6084,6 +6105,76 @@
         }
       }
 
+      function renderResetFollow(view) {
+        const follow = view.reset_follow;
+        if (!follow) return el("span");
+        const date = (value) =>
+          value ? window.billingI18n.date(value, { dateStyle: "short", timeStyle: "medium", hour12: false }) : m("ui.reset_follow_waiting");
+        return el(
+          "div",
+          { class: "reset-follow-status small" },
+          el("b", { text: m("ui.reset_follow_enabled", { v0: follow.provider, v1: follow.auth_index }) }),
+          el("span", { class: "muted", text: m("ui.reset_follow_sync_on_refresh") }),
+          el("span", { class: "muted", text: m("ui.reset_follow_synced", { v0: date(follow.synced_at) }) }),
+          (view.windows || []).map((window) => {
+            const match = follow.windows?.[window.id];
+            return el("span", {
+              text: m("ui.reset_follow_window", {
+                v0: window.name,
+                v1: match ? periodLabel(match.period_seconds) : "—",
+                v2: date(match?.next_reset_at)
+              })
+            });
+          }),
+          follow.error?.message
+            ? el("span", { class: "bad", role: "status", text: window.billingI18n.serverMessage(follow.error, follow.error.message) })
+            : null
+        );
+      }
+
+      async function openResetFollow(view) {
+        const select = $("reset-follow-account");
+        const options = (files, selected) => {
+          select.replaceChildren(
+            el("option", { value: "", text: m("ui.reset_follow_off") }),
+            ...files.map((file) => el("option", { value: file.auth_index, text: file.category + DISPLAY_SEPARATOR + file.name }))
+          );
+          if (view.reset_follow && !files.some((file) => file.auth_index === view.reset_follow.auth_index)) {
+            select.append(el("option", { value: view.reset_follow.auth_index, text: m("ui.reset_follow_missing") }));
+          }
+          select.value = selected;
+        };
+        openEditor("reset-follow-dialog", null, () => {
+          options([], view.reset_follow?.auth_index || "");
+          $("reset-follow-status").replaceChildren(renderResetFollow(view));
+          $("reset-follow-save").onclick = () =>
+            submitEditor("reset-follow-dialog", async () => {
+              await mutateAdmin(
+                "PUT",
+                "/keys/reset-follow",
+                { scope: view.scope, auth_index: select.value },
+                { timeoutMS: AUTH_QUOTA_TIMEOUT_MS }
+              );
+              notify(m("ui.reset_follow_saved"));
+            });
+        });
+        const editor = editors.get($("reset-follow-dialog"));
+        try {
+          const result = await plugin("GET", "/auth-files?scope=" + encodeURIComponent(view.scope));
+          const files = requireArray(result.files, m("ui.auth_files")).filter(
+            (file) => ["codex", "claude"].includes(file.category) && file.quota_supported && !file.disabled
+          );
+          if (editorCurrent(editor) && !editor.saving) options(files, select.value);
+        } catch (error) {
+          if (error instanceof AuthError || error instanceof StaleRequestError) throw error;
+          if (editorCurrent(editor) && !editor.saving) {
+            setText(editor.notice, error.message || String(error));
+            editor.notice.className = "editor-state notice err";
+          }
+        }
+      }
+      $("reset-follow-cancel").onclick = () => $("reset-follow-dialog").close();
+
       function renderKeys() {
         if (currentRole !== "admin" || activeTab(false) !== "keys") return false;
         closeHoverTooltip();
@@ -6204,7 +6295,7 @@
                   ]
                 })
               ),
-              el("td", {}, el("span", { class: "native-select key-plan-select" }, select)),
+              el("td", {}, el("span", { class: "native-select key-plan-select" }, select), renderResetFollow(view)),
               el("td", {}, renderKeyRoutes(view)),
               el("td", {}, concurrency),
               el("td", {}, usage),
@@ -6229,12 +6320,18 @@
                 { class: "small" },
                 el("button", {
                   class: "link",
+                  text: m("ui.reset_follow"),
+                  disabled: deleted || saving || view.unlimited,
+                  onclick: () => guard(() => openResetFollow(view))
+                }),
+                el("button", {
+                  class: "link",
                   text: m("ui.reset"),
                   disabled: deleted || view.unlimited,
                   onclick: () =>
                     openActionDialog(
                       m("ui.reset_subscription_quota"),
-                      view.windows[0]?.cycle_anchor_at
+                      view.reset_follow || view.windows[0]?.cycle_anchor_at
                         ? m("ui.clear_usage_in_all_windows_and_keep_the_scheduled_reset_times")
                         : m("ui.all_quota_cycles_will_end_new_cycles_start_when_the_next_request_is_admitted"),
                       undefined,
@@ -8266,6 +8363,7 @@
 
       function quotaWindowResetLabel(row, showCountdown) {
         if (!row.started) return m("ui.not_started");
+        if (!row.end_at) return m("ui.reset_follow_waiting");
         const resetAt = new Date(row.end_at);
         const remaining = (resetAt.getTime() - Date.now()) / 1000;
         return (
@@ -8285,7 +8383,7 @@
             const reset = el("span", {
               class: "muted",
               text: quotaWindowResetLabel(window, account),
-              title: window.started ? m("ui.resets_at_value", { v0: when(window.end_at) }) : null
+              title: window.started && window.end_at ? m("ui.resets_at_value", { v0: when(window.end_at) }) : null
             });
             return el(
               "div",

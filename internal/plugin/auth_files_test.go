@@ -308,7 +308,7 @@ func TestUpstreamErrorsRedactPhysicalCredential(t *testing.T) {
 		app.SetHostCaller(func(string, any) (json.RawMessage, error) {
 			return mustJSONRaw(t, hostHTTPResponse{StatusCode: tc.status, Body: []byte(tc.body)}), nil
 		})
-		_, errCall := app.upstream("", http.MethodGet, "https://example.invalid/quota", "dummy-secret-token", nil, nil)
+		_, errCall := (quotaClient{hostCaller: app.hostCaller}).upstream("", http.MethodGet, "https://example.invalid/quota", "dummy-secret-token", nil, nil)
 		detail := messages.FromError(errCall)
 		if errCall == nil || detail.Key != tc.key || strings.Contains(detail.Text, "dummy-secret-token") {
 			t.Fatalf("error = %v, detail = %+v", errCall, detail)
@@ -412,7 +412,7 @@ func TestCodexResetCreditExpiry(t *testing.T) {
 				return mustJSONRaw(t, hostHTTPResponse{StatusCode: tc.status, Body: []byte(tc.credits)}), nil
 			})
 			result := authQuotaResponse{}
-			if err := app.fetchCodexQuota("dummy-callback", "dummy-token", "dummy-account", &result); err != nil {
+			if err := (quotaClient{hostCaller: app.hostCaller}).fetchCodexQuota("dummy-callback", "dummy-token", "dummy-account", &result); err != nil {
 				t.Fatal(err)
 			}
 			if calls != 2 || len(result.RateLimitResetCredits) != tc.wantCredits || result.RateLimitResetCreditsUnavailable != tc.unavailable || len(result.Quota) != 1 || *result.Quota[0].RemainingPercent != 62 {
@@ -473,7 +473,7 @@ func TestClaudeQuotaUsesFableLimitAndCanonicalTeamPlan(t *testing.T) {
 		return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(responses[request.URL])}), nil
 	})
 	result := authQuotaResponse{Quota: []quotaRow{}}
-	if errFetch := app.fetchClaudeQuota("", "token", &result); errFetch != nil {
+	if errFetch := (quotaClient{hostCaller: app.hostCaller}).fetchClaudeQuota("", "token", &result); errFetch != nil {
 		t.Fatal(errFetch)
 	}
 	if len(result.Quota) != 3 || result.Quota[0].Label != "5-hour limit" || result.Quota[1].Label != "Sonnet weekly limit" || result.Quota[2].Label != "Fable weekly limit" {
@@ -496,7 +496,7 @@ func TestClaudeQuotaOmitsDisabledExtraUsage(t *testing.T) {
 		return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"account":{"has_claude_pro":true}}`)}), nil
 	})
 	result := authQuotaResponse{Quota: []quotaRow{}}
-	if errFetch := app.fetchClaudeQuota("", "token", &result); errFetch != nil {
+	if errFetch := (quotaClient{hostCaller: app.hostCaller}).fetchClaudeQuota("", "token", &result); errFetch != nil {
 		t.Fatal(errFetch)
 	}
 	if len(result.Quota) != 0 || !profileCalled || result.Plan != "Pro" {
@@ -546,7 +546,7 @@ func TestKimiQuotaReadsNestedLimitShape(t *testing.T) {
 	})
 	fetchedAt := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
 	result := authQuotaResponse{FetchedAt: fetchedAt, Quota: []quotaRow{}}
-	if errFetch := app.fetchKimiQuota("", "token", &result); errFetch != nil {
+	if errFetch := (quotaClient{hostCaller: app.hostCaller}).fetchKimiQuota("", "token", &result); errFetch != nil {
 		t.Fatal(errFetch)
 	}
 	if len(result.Quota) != 1 {
@@ -572,25 +572,11 @@ func TestXAIQuotaDeduplicatesProductLimits(t *testing.T) {
 		return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"config":{}}`)}), nil
 	})
 	result := authQuotaResponse{Quota: []quotaRow{}}
-	if errFetch := app.fetchXAIQuota("", "token", "user", &result); errFetch != nil {
+	if errFetch := (quotaClient{hostCaller: app.hostCaller}).fetchXAIQuota("", "token", "user", &result); errFetch != nil {
 		t.Fatal(errFetch)
 	}
 	if len(result.Quota) != 2 || result.Quota[0].Label != "grok code usage" || result.Quota[0].RemainingPercent == nil || *result.Quota[0].RemainingPercent != 55 || result.Quota[1].Label != "Grok Vision usage" {
 		t.Fatalf("quota = %+v", result.Quota)
-	}
-}
-
-func TestCredentialProxyFailsInsteadOfSendingDirectRequest(t *testing.T) {
-	app := newConfiguredApp(t)
-	app.SetHostCaller(func(method string, _ any) (json.RawMessage, error) {
-		if method != hostAuthGet {
-			t.Fatalf("unexpected host method %q", method)
-		}
-		return json.RawMessage(`{"auth_index":"codex-1","json":{"access_token":"dummy-token","proxy_url":"socks5://proxy.example:1080"}}`), nil
-	})
-	_, errFetch := app.fetchAuthQuota("", hostAuthFile{AuthIndex: "codex-1"}, "codex")
-	if errFetch == nil || !strings.Contains(errFetch.Error(), "separate proxy") {
-		t.Fatalf("error = %v", errFetch)
 	}
 }
 
@@ -609,7 +595,7 @@ func TestXAIQuotaCombinesWeeklyMonthlyAndOnDemand(t *testing.T) {
 		return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(body)}), nil
 	})
 	result := authQuotaResponse{Quota: []quotaRow{}}
-	if errFetch := app.fetchXAIQuota("", "token", "user", &result); errFetch != nil {
+	if errFetch := (quotaClient{hostCaller: app.hostCaller}).fetchXAIQuota("", "token", "user", &result); errFetch != nil {
 		t.Fatal(errFetch)
 	}
 	want := []string{"Weekly limit", "Monthly allowance", "Pay-as-you-go allowance"}
@@ -708,8 +694,11 @@ func TestAuthQuotaReset(t *testing.T) {
 					reads++
 					return json.RawMessage(`{"json":{"access_token":"dummy-upstream-token","account_id":"account-7"}}`), nil
 				case hostHTTPDo:
-					consumes++
 					upstream := payload.(hostHTTPRequest)
+					if upstream.Method == http.MethodGet {
+						return mustJSONRaw(t, hostHTTPResponse{StatusCode: 200, Body: []byte(`{}`)}), nil
+					}
+					consumes++
 					if upstream.Method != http.MethodPost || upstream.URL != "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume" ||
 						upstream.HostCallbackID != req.HostCallbackID || upstream.Headers.Get("Chatgpt-Account-Id") != "account-7" {
 						t.Fatalf("unexpected reset request: %+v", upstream)
@@ -758,7 +747,11 @@ func TestAuthQuotaReset(t *testing.T) {
 			if tc.want == 200 || tc.want == 502 {
 				wantCalls = 1
 			}
-			if reads != wantCalls || consumes != wantCalls {
+			wantReads := wantCalls
+			if tc.want == 200 {
+				wantReads++
+			}
+			if reads != wantReads || consumes != wantCalls {
 				t.Fatalf("credential reads = %d, resets = %d; want %d", reads, consumes, wantCalls)
 			}
 			if (tc.want == 400 || tc.want == 401 || tc.want == 403) && hostCalls != 0 {

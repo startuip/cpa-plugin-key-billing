@@ -13,8 +13,8 @@ import (
 // cfgMu serializes Configure/Close. mu guards state, config and repository
 // access, including mutations and their database writes.
 //
-// Work must finish synchronously within host calls: background activity in this
-// embedded Go runtime can conflict with CLIProxyAPI's runtime.
+// Store work is synchronous. The App owns the one authorized reset-follow
+// worker and joins it before reconfiguring or closing this store.
 type Store struct {
 	cfgMu           sync.Mutex
 	referencePrices atomic.Pointer[referencePriceManager]
@@ -225,6 +225,8 @@ func editConfiguration[T any](s *Store, fn func(*State) (T, Changes, error)) (T,
 		defer s.mu.Unlock()
 
 		next := *s.state
+		next.ResetSnapshots = maps.Clone(s.state.ResetSnapshots)
+		next.UpstreamResets = maps.Clone(s.state.UpstreamResets)
 		next.Plans = make([]Plan, len(s.state.Plans))
 		for i, plan := range s.state.Plans {
 			next.Plans[i] = clonePlan(plan)
@@ -241,12 +243,16 @@ func editConfiguration[T any](s *Store, fn func(*State) (T, Changes, error)) (T,
 			}
 			copyKey := *key
 			copyKey.Cycles = maps.Clone(key.Cycles)
+			copyKey.ResetFollow = cloneResetFollow(key.ResetFollow)
 			copyKey.RouteBindings = key.RouteBindings.clone()
 			next.Keys[scope] = &copyKey
 		}
 
 		result, changes, err := fn(&next)
 		if err != nil {
+			return err
+		}
+		if err := validateFollowConfiguration(s.state, &next, s.Now()); err != nil {
 			return err
 		}
 		changes = s.dirty.merge(changes)

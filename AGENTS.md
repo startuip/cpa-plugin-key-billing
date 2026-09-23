@@ -33,7 +33,7 @@ Source paths are relative to this repository's root:
 - Failure events use `UsageRecord.Failed` and `UsageRecord.Failure`. Log only fields present in the record; do not invent a downstream request path or request ID.
 - Preserve the host's TTFT value as reported for both streaming and non-streaming requests. Do not infer streaming mode from TTFT, response headers, or approximate latency equality.
 - Keep provider token semantics aligned with CLIProxyAPI. In particular, Claude's raw `OutputTokens` includes reasoning tokens; do not charge reasoning twice.
-- Do not introduce plugin-owned background goroutines, timers, or flushers. Complete work synchronously within host calls so the embedded Go runtime remains inactive between calls.
+- Do not introduce plugin-owned background goroutines, timers, or flushers. Complete work synchronously within host calls so the embedded Go runtime remains inactive between calls. Reset-follow synchronization runs only when enabled/switched, explicitly refreshed from the page, or refreshed after a manual upstream reset; it has no scheduled background task.
 
 ## Data and Compatibility
 

@@ -154,7 +154,7 @@ func TestFreshSchemaVersionAndTables(t *testing.T) {
 		t.Fatalf("schema version = %d, err = %v", version, err)
 	}
 	want := map[string]bool{
-		"api_keys": true, "routes": true, "plans": true,
+		"api_keys": true, "routes": true, "plans": true, "reset_snapshots": true, "upstream_resets": true,
 		"prices": true, "request_events": true, "config_credentials": true,
 		"request_errors": true, "plugin_logs": true, "reference_prices_metadata": true, "reference_prices": true,
 	}
@@ -210,7 +210,7 @@ func TestQuotaConfigurationExtendsExistingJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := database.db.Exec(insertKey, "dummy-scope", "sk-dum…0001", "", true, 0, "p", 0,
-		`{"w":{"plan_id":"p","start_at":"2026-09-08T12:00:00Z","end_at":"2026-09-08T13:00:00Z","spent_usd":3.5}}`, `{}`); err != nil {
+		`{"w":{"plan_id":"p","start_at":"2026-09-08T12:00:00Z","end_at":"2026-09-08T13:00:00Z","spent_usd":3.5}}`, `{}`, `null`); err != nil {
 		t.Fatal(err)
 	}
 	state := mustLoad(t, database).State
