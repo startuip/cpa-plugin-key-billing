@@ -2641,6 +2641,7 @@
       <h2 data-i18n="ui.reset_follow">Follow upstream resets</h2>
       <div class="editor-state notice hidden"></div>
       <p class="small muted" data-i18n="ui.reset_follow_help">Keep this key's usage independent and follow the account's ordinary reset windows. Saving checks every subscription window. Current usage is preserved.</p>
+      <p class="small muted" data-i18n="ui.reset_follow_stop_hint">Before disabling the plugin, enable pause_reset_follow_sync in its settings or turn off following for all keys. CPA does not notify the plugin when disabled.</p>
       <label class="field">
         <span data-i18n="ui.reset_follow_account">Upstream account</span>
         <span class="native-select"><select id="reset-follow-account"></select></span>
@@ -6114,7 +6115,10 @@
           "div",
           { class: "reset-follow-status small" },
           el("b", { text: m("ui.reset_follow_enabled", { v0: follow.provider, v1: follow.auth_index }) }),
-          el("span", { class: "muted", text: m("ui.reset_follow_sync_on_refresh") }),
+          el("span", {
+            class: "muted",
+            text: m(view.reset_follow_sync_paused ? "ui.reset_follow_sync_paused" : "ui.reset_follow_sync_automatic")
+          }),
           el("span", { class: "muted", text: m("ui.reset_follow_synced", { v0: date(follow.synced_at) }) }),
           (view.windows || []).map((window) => {
             const match = follow.windows?.[window.id];

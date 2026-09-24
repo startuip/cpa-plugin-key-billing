@@ -6,6 +6,7 @@ import (
 	"maps"
 	"net/http"
 	"sync"
+	"time"
 
 	"cpa-key-billing/internal/billing"
 	"cpa-key-billing/internal/sqlite"
@@ -16,6 +17,10 @@ type App struct {
 	callsMu               sync.RWMutex
 	quiesced              bool
 	resetAccounts         sync.Map
+	resetSyncMu           sync.Mutex
+	resetSyncBlocked      bool
+	resetSync             *resetSyncWorker
+	newResetSyncTimer     func(time.Duration) resetSyncTimer
 	store                 *billing.Store
 	hostCaller            HostCaller
 	admissionsMu          sync.Mutex
@@ -30,6 +35,8 @@ type App struct {
 }
 
 func (a *App) SetHostCaller(caller HostCaller) {
+	a.callsMu.Lock()
+	defer a.callsMu.Unlock()
 	a.hostCaller = caller
 }
 
@@ -40,6 +47,7 @@ func NewApp() *App {
 func newApp(store *billing.Store) *App {
 	return &App{
 		store:                 store,
+		newResetSyncTimer:     newResetTimer,
 		admissions:            make(map[string]*requestAdmission),
 		credentials:           make(map[string]credentialView),
 		credentialsByRawID:    make(map[string]string),
@@ -68,14 +76,23 @@ func (a *App) HandleMethod(method string, request []byte) (response []byte, err 
 	if method == MethodPluginRegister || method == MethodPluginReconfigure || method == MethodPluginQuiesce {
 		a.lifecycleMu.Lock()
 		defer a.lifecycleMu.Unlock()
+		// Stop before taking the writer lock: the worker may be entering a
+		// round under callsMu. Joining it while holding that lock deadlocks.
+		a.stopResetSync()
 		a.callsMu.Lock()
 		defer a.callsMu.Unlock()
 		if method == MethodPluginQuiesce {
 			a.quiesced = true
 			return OKEnvelope(struct{}{})
 		}
-		a.quiesced = false
-		return a.handleMethod(method, request)
+		response, err = a.handleMethod(method, request)
+		if err == nil {
+			a.quiesced = false
+		}
+		if !a.quiesced {
+			a.resumeResetSync()
+		}
+		return response, err
 	}
 	a.callsMu.RLock()
 	defer a.callsMu.RUnlock()
@@ -118,6 +135,7 @@ func (a *App) Shutdown() {
 	}
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+	a.stopResetSync()
 	a.callsMu.Lock()
 	defer a.callsMu.Unlock()
 	a.quiesced = true
@@ -183,6 +201,11 @@ func registration() Registration {
 					Name:        "allow_api_key_quota_reset",
 					Type:        "boolean",
 					Description: "Allow API key users to reset Codex auth file quotas using upstream reset credits",
+				},
+				{
+					Name:        "pause_reset_follow_sync",
+					Type:        "boolean",
+					Description: "Pause automatic upstream reset synchronization; pause before disabling the plugin",
 				},
 				{
 					Name:        "state_file",

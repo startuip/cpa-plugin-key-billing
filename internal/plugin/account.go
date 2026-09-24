@@ -15,8 +15,9 @@ type accountIdentity struct {
 }
 
 type accountSubscription struct {
-	Name        string               `json:"name,omitempty"`
-	ResetFollow *billing.ResetFollow `json:"reset_follow,omitempty"`
+	Name                  string               `json:"name,omitempty"`
+	ResetFollow           *billing.ResetFollow `json:"reset_follow,omitempty"`
+	ResetFollowSyncPaused bool                 `json:"reset_follow_sync_paused,omitempty"`
 	billing.QuotaView
 }
 
@@ -71,7 +72,7 @@ func (a *App) accountSubscription(access viewAccess) ManagementResponse {
 	}
 	view := access.Key
 	return viewJSON(access, http.StatusOK, accountSubscriptionResponse{
-		Subscription: accountSubscription{Name: view.PlanName, QuotaView: view.QuotaView, ResetFollow: view.ResetFollow},
+		Subscription: accountSubscription{Name: view.PlanName, QuotaView: view.QuotaView, ResetFollow: view.ResetFollow, ResetFollowSyncPaused: view.ResetFollowSyncPaused},
 		Concurrency:  accountConcurrency{Limit: view.ConcurrencyLimit, Current: view.CurrentConcurrency},
 	})
 }

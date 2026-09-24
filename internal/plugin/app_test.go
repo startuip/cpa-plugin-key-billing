@@ -42,7 +42,7 @@ func TestRegisterDeclaresExpectedCapabilities(t *testing.T) {
 	}
 	if fields["state_file"].Type != "string" || fields["debug"].Type != "boolean" ||
 		fields["codex_fast_mode_billing"].Type != "boolean" || fields["mask_api_key_view_emails"].Type != "boolean" ||
-		fields["allow_api_key_quota_reset"].Type != "boolean" || fields["enabled"].Name != "" {
+		fields["pause_reset_follow_sync"].Type != "boolean" || fields["allow_api_key_quota_reset"].Type != "boolean" || fields["enabled"].Name != "" {
 		t.Fatalf("ConfigFields = %+v", registration.Metadata.ConfigFields)
 	}
 }

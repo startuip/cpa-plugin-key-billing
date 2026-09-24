@@ -171,6 +171,12 @@ func (s *Store) AllowAPIKeyQuotaReset() bool {
 	return s.cfg.AllowAPIKeyQuotaReset
 }
 
+func (s *Store) ResetFollowSyncPaused() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.cfg.PauseResetFollowSync
+}
+
 func (s *Store) read(fn func(*State)) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

@@ -89,13 +89,19 @@ func (a *App) applyResetFollow(req ManagementRequest, scope, authIndex string) M
 	if err := a.store.SetResetFollow(scope, authIndex); err != nil {
 		return errorResponse(err)
 	}
+	// Saving already synchronized this account. The first background round
+	// waits thirty minutes instead of querying it a second time immediately.
+	a.startResetSync(false)
 	return JSONResponse(http.StatusOK, map[string]bool{"updated": true})
 }
 
-// Synchronization runs only inside an explicit host management call. In
-// particular, registration/reconfiguration and model requests never start work.
-// v7.2.143 does not notify plugins when disabled, so no background task is safe.
 func (a *App) refreshResetFollowers(req ManagementRequest, access viewAccess) {
+	a.syncResetFollowers(req, access, nil)
+}
+
+// Foreground and scheduled rounds use the same account locks and snapshots.
+// A stopped worker finishes its issued query, then starts no further accounts.
+func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stop <-chan struct{}) {
 	if !a.store.Enabled() {
 		return
 	}
@@ -109,9 +115,15 @@ func (a *App) refreshResetFollowers(req ManagementRequest, access viewAccess) {
 		accounts = a.store.FollowedAccounts()
 	}
 	for _, index := range accounts {
+		if resetSyncStopped(stop) {
+			return
+		}
 		func() {
 			unlock := a.lockResetAccount(index)
 			defer unlock()
+			if resetSyncStopped(stop) {
+				return
+			}
 			if access.APIKey {
 				key, ok := a.store.KeyViewForScope(access.Scope)
 				if !ok || key.ResetFollow == nil || key.ResetFollow.AuthIndex != index {

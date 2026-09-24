@@ -681,10 +681,12 @@
   "backend.the_followed_account_must_be_allowed_by_this_api_key_s_routing_rules": "The followed account must be allowed by this API key's routing rules",
   "backend.waiting_for_upstream_reset_times": "Waiting for upstream reset times",
   "backend.the_followed_upstream_account_is_unavailable": "The followed upstream account is unavailable",
-  "ui.reset_follow_sync_on_refresh": "Syncs when enabled or refreshed from the page; no background schedule.",
   "backend.invalid_auth_file_proxy": "Invalid auth file proxy; use HTTP, HTTPS, SOCKS5, SOCKS5H, direct, or none",
   "backend.auth_file_proxy_request_timed_out": "Auth file proxy request timed out",
   "backend.auth_file_proxy_request_failed": "Auth file proxy request failed; check the proxy connection and credentials",
   "backend.auth_file_proxy_response_read_failed": "Could not read the quota response through the auth file proxy",
-  "backend.quota_response_exceeds_size_limit": "Quota response exceeds the size limit"
+  "backend.quota_response_exceeds_size_limit": "Quota response exceeds the size limit",
+  "ui.reset_follow_sync_automatic": "Automatically synchronizes every 30 minutes; enabling or refreshing the page also synchronizes.",
+  "ui.reset_follow_sync_paused": "Automatic synchronization is paused. Refresh the page to synchronize manually.",
+  "ui.reset_follow_stop_hint": "Before disabling the plugin, enable pause_reset_follow_sync in its settings or turn off following for all keys. CPA does not notify the plugin when disabled."
 }

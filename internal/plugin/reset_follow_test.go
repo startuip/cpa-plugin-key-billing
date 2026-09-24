@@ -157,12 +157,12 @@ func TestResetFollowLifecycleWaitsForForegroundRefresh(t *testing.T) {
 				t.Fatal("stopped instance contacted upstream")
 			}
 			if lifecycle != "shutdown" {
-				config = mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n", path))})
+				config = mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\npause_reset_follow_sync: true\n", path))})
 				if _, err := app.HandleMethod(MethodPluginReconfigure, config); err != nil {
 					t.Fatal(err)
 				}
 				if queries.Load() != 1 {
-					t.Fatal("reconfiguration started an unsolicited quota query")
+					t.Fatal("paused reconfiguration started an unsolicited quota query")
 				}
 				view, _ := app.store.KeyViewForScope(billing.CallerScope("sk-dummy-follow-a"))
 				if view.ResetFollow == nil {

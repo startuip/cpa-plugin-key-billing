@@ -681,10 +681,12 @@
   "backend.the_followed_account_must_be_allowed_by_this_api_key_s_routing_rules": "跟随账号必须在此 API Key 的路由允许范围内",
   "backend.waiting_for_upstream_reset_times": "等待上游重置时间",
   "backend.the_followed_upstream_account_is_unavailable": "跟随的上游账号不可用",
-  "ui.reset_follow_sync_on_refresh": "开启跟随或刷新页面时同步，无后台定时任务。",
   "backend.invalid_auth_file_proxy": "认证文件代理无效，请使用 HTTP、HTTPS、SOCKS5、SOCKS5H、direct 或 none",
   "backend.auth_file_proxy_request_timed_out": "认证文件代理请求超时",
   "backend.auth_file_proxy_request_failed": "认证文件代理请求失败，请检查代理连接和认证信息",
   "backend.auth_file_proxy_response_read_failed": "无法通过认证文件代理读取额度响应",
-  "backend.quota_response_exceeds_size_limit": "额度响应超过大小限制"
+  "backend.quota_response_exceeds_size_limit": "额度响应超过大小限制",
+  "ui.reset_follow_sync_automatic": "每 30 分钟自动同步；开启跟随或刷新页面时也会同步。",
+  "ui.reset_follow_sync_paused": "自动同步已暂停，仍可刷新页面手动同步。",
+  "ui.reset_follow_stop_hint": "停用插件前，请在插件配置中开启 pause_reset_follow_sync，或先取消所有 Key 的跟随。CPA 停用插件时不会通知插件。"
 }

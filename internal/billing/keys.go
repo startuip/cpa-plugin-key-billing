@@ -13,12 +13,13 @@ type KeyView struct {
 	InConfig  bool      `json:"in_config"`
 	DeletedAt time.Time `json:"deleted_at,omitzero"`
 
-	PlanID             string        `json:"plan_id,omitempty"`
-	PlanName           string        `json:"plan_name,omitempty"`
-	ConcurrencyLimit   int           `json:"concurrency_limit"`
-	CurrentConcurrency int           `json:"current_concurrency"`
-	RouteBindings      RouteBindings `json:"route_bindings"`
-	ResetFollow        *ResetFollow  `json:"reset_follow,omitempty"`
+	PlanID                string        `json:"plan_id,omitempty"`
+	PlanName              string        `json:"plan_name,omitempty"`
+	ConcurrencyLimit      int           `json:"concurrency_limit"`
+	CurrentConcurrency    int           `json:"current_concurrency"`
+	RouteBindings         RouteBindings `json:"route_bindings"`
+	ResetFollow           *ResetFollow  `json:"reset_follow,omitempty"`
+	ResetFollowSyncPaused bool          `json:"reset_follow_sync_paused,omitempty"`
 	QuotaView
 }
 
@@ -39,7 +40,9 @@ func (s *Store) KeyViews() []KeyView {
 			if key.DeletedAt.IsZero() && settleKeyPlan(key, plans[key.PlanID], now) {
 				settled = append(settled, scope)
 			}
-			views = append(views, keyView(scope, key, plans[key.PlanID], s.activeByScope[scope], now))
+			view := keyView(scope, key, plans[key.PlanID], s.activeByScope[scope], now)
+			view.ResetFollowSyncPaused = s.cfg.PauseResetFollowSync
+			views = append(views, view)
 		}
 		sortKeyViews(views)
 		return views, Changes{Keys: settled}
@@ -95,7 +98,9 @@ func (s *Store) KeyViewForScope(scope string) (KeyView, bool) {
 		if settleKeyPlan(key, plan, now) {
 			changed.Keys = []string{scope}
 		}
-		return result{view: keyView(scope, key, plan, s.activeByScope[scope], now), ok: true}, changed
+		view := keyView(scope, key, plan, s.activeByScope[scope], now)
+		view.ResetFollowSyncPaused = s.cfg.PauseResetFollowSync
+		return result{view: view, ok: true}, changed
 	})
 	return current.view, current.ok
 }
