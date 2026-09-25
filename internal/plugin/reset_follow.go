@@ -95,13 +95,17 @@ func (a *App) applyResetFollow(req ManagementRequest, scope, authIndex string) M
 	return JSONResponse(http.StatusOK, map[string]bool{"updated": true})
 }
 
+// A draining lifecycle call waits for this refresh while requests queue behind
+// it, so the refresh stops before the next account instead of querying them all.
 func (a *App) refreshResetFollowers(req ManagementRequest, access viewAccess) {
-	a.syncResetFollowers(req, access, nil)
+	drain := a.drainSignal()
+	a.syncResetFollowers(req, access, func() bool { return resetSyncStopped(drain) || !a.store.Enabled() })
 }
 
 // Foreground and scheduled rounds use the same account locks and snapshots.
-// A stopped worker finishes its issued query, then starts no further accounts.
-func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stop <-chan struct{}) {
+// stopped is checked before each account: an issued query always finishes, and
+// no further account starts after it.
+func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stopped func() bool) {
 	if !a.store.Enabled() {
 		return
 	}
@@ -115,13 +119,13 @@ func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stop 
 		accounts = a.store.FollowedAccounts()
 	}
 	for _, index := range accounts {
-		if resetSyncStopped(stop) {
+		if stopped() {
 			return
 		}
 		func() {
 			unlock := a.lockResetAccount(index)
 			defer unlock()
-			if resetSyncStopped(stop) {
+			if stopped() {
 				return
 			}
 			if access.APIKey {
