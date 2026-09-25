@@ -627,6 +627,27 @@
     "key": "backend.the_followed_account_must_be_allowed_by_this_api_key_s_routing_rules",
     "formats": []
   },
+  "API key %q follows upstream resets; turn off following before removing its subscription plan": {
+    "key": "backend.api_key_value_follows_upstream_resets_turn_off_following_before_removing_its_plan",
+    "formats": [
+      "%q"
+    ]
+  },
+  "API key %q: window %q (%d seconds) needs exactly one ordinary upstream window; found %d": {
+    "key": "backend.api_key_value_window_value_value_seconds_needs_exactly_one_ordinary_upstream_window_found_value",
+    "formats": [
+      "%q",
+      "%q",
+      "%d",
+      "%d"
+    ]
+  },
+  "API key %q: the followed account must be allowed by its routing rules": {
+    "key": "backend.api_key_value_the_followed_account_must_be_allowed_by_its_routing_rules",
+    "formats": [
+      "%q"
+    ]
+  },
   "Waiting for upstream reset times": {
     "key": "backend.waiting_for_upstream_reset_times",
     "formats": []

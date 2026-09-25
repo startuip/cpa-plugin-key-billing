@@ -116,13 +116,7 @@ func (s *Store) SetResetFollow(scope, authIndex string) error {
 		settleExpiredCycles(key, now)
 		if authIndex == "" {
 			if key.ResetFollow != nil {
-				for _, window := range plan.Windows {
-					cycle := key.Cycles[window.ID]
-					cycle.EndAt = window.newCycle(plan.ID, now).EndAt
-					cycle.ScheduleOverride = true
-					key.Cycles[window.ID] = cycle
-				}
-				key.ResetFollow = nil
+				stopFollowing(key, plan, now)
 			}
 		} else {
 			snapshot := state.ResetSnapshots[authIndex]
@@ -154,44 +148,149 @@ func (s *Store) SetResetFollow(scope, authIndex string) error {
 }
 
 // Called inside the configuration transaction. Route/plan edits cannot silently
-// leave a following key incompatible. Failed edits keep all previous settings.
-func validateFollowConfiguration(previous, next *State, now time.Time) error {
+// leave a following key incompatible, and failed edits keep all previous
+// settings. Edits never need a fresh upstream snapshot, and deleted keys, which
+// cannot be managed, stop following instead of blocking an edit. Returns the
+// keys it changed so they are saved with the edit.
+func validateFollowConfiguration(previous, next *State, now time.Time) ([]string, error) {
+	var changed []string
 	for scope, key := range next.Keys {
 		if key == nil || key.ResetFollow == nil {
 			continue
 		}
-		old := previous.Keys[scope]
 		plan, _ := next.FindPlan(key.PlanID)
-		var oldPlan Plan
-		if old != nil {
-			oldPlan, _ = previous.FindPlan(old.PlanID)
-		}
-		if old != nil && old.ResetFollow != nil && key.ResetFollow.AuthIndex == old.ResetFollow.AuthIndex &&
-			reflect.DeepEqual(plan, oldPlan) && reflect.DeepEqual(resolveRoutingState(next, key), resolveRoutingState(previous, old)) {
+		if followUnchanged(previous, next, previous.Keys[scope], key, plan) {
 			continue
 		}
-		snapshot := next.ResetSnapshots[key.ResetFollow.AuthIndex]
-		matched, err := MatchResetWindows(plan, snapshot, now)
+		err := refollow(next, key, plan, now)
+		if err != nil && !key.DeletedAt.IsZero() {
+			stopFollowing(key, plan, now)
+			err = nil
+		}
+		if err == nil {
+			// Loading rejects inconsistent cycles; never save what cannot be loaded.
+			err = key.ValidateCycles(plan)
+		}
 		if err != nil {
-			return err
+			return nil, err
 		}
-		if !followRouteAllowed(next, key, snapshot) {
-			return invalidf("The followed account must be allowed by this API key's routing rules")
+		changed = append(changed, scope)
+	}
+	return changed, nil
+}
+
+// Names and limits do not move upstream boundaries; only the followed account,
+// window schedules (a changed one drops its cycle), the cycle set and credential
+// routing matter.
+func followUnchanged(previous, next *State, old, key *KeyState, plan Plan) bool {
+	if old == nil || old.ResetFollow == nil || old.ResetFollow.AuthIndex != key.ResetFollow.AuthIndex ||
+		old.PlanID != key.PlanID || plan.ID == "" || len(key.Cycles) != len(plan.Windows) {
+		return false
+	}
+	oldPlan, _ := previous.FindPlan(old.PlanID)
+	if len(oldPlan.Windows) != len(plan.Windows) {
+		return false
+	}
+	for _, window := range plan.Windows {
+		index := slices.IndexFunc(oldPlan.Windows, func(other QuotaWindow) bool { return other.ID == window.ID })
+		if index < 0 || !window.sameSchedule(oldPlan.Windows[index]) {
+			return false
 		}
-		for id, window := range matched {
-			window.LastResetAt = key.ResetFollow.Windows[id].LastResetAt
-			matched[id] = window
-		}
-		key.ResetFollow.Windows = matched
-		key.ResetFollow.CredentialRef = snapshot.CredentialRef
-		activateCycles(key, plan, now)
-		for id, window := range matched {
-			cycle := key.Cycles[id]
-			cycle.EndAt = window.NextResetAt
-			key.Cycles[id] = cycle
+		if _, ok := key.Cycles[window.ID]; !ok {
+			return false
 		}
 	}
+	return reflect.DeepEqual(resolveRoutingState(next, key), resolveRoutingState(previous, old))
+}
+
+// refollow re-derives a following key's windows after a plan or routing edit.
+// A window whose ID and period are unchanged keeps its known boundaries. A new
+// or rescheduled window takes the last known upstream window of its period; an
+// expired reset time stays unknown until the next synchronization.
+func refollow(state *State, key *KeyState, plan Plan, now time.Time) error {
+	name := followKeyName(key)
+	if plan.ID == "" {
+		return invalidf("API key %q follows upstream resets; turn off following before removing its subscription plan", name)
+	}
+	if key.Cycles == nil {
+		key.Cycles = make(map[string]QuotaCycle)
+	}
+	// Consume confirmed boundaries first, so a kept window never carries an
+	// expired reset time into a recreated cycle.
+	settleFollowCycles(key, now)
+	snapshot := state.ResetSnapshots[key.ResetFollow.AuthIndex]
+	windows := make(map[string]FollowWindow, len(plan.Windows))
+	for _, window := range plan.Windows {
+		if current, ok := key.ResetFollow.Windows[window.ID]; ok && current.PeriodSeconds == window.PeriodSeconds {
+			windows[window.ID] = current
+			continue
+		}
+		var candidates []UpstreamWindow
+		for _, upstream := range snapshot.Windows {
+			if upstream.PeriodSeconds == window.PeriodSeconds && upstream.ID != "" {
+				candidates = append(candidates, upstream)
+			}
+		}
+		if len(candidates) != 1 {
+			return invalidf("API key %q: window %q (%d seconds) needs exactly one ordinary upstream window; found %d",
+				name, window.Name, window.PeriodSeconds, len(candidates))
+		}
+		matched := FollowWindow{UpstreamID: candidates[0].ID, PeriodSeconds: window.PeriodSeconds}
+		if resetAt := candidates[0].ResetAt; resetAt.After(now) && resetAt.Year() <= 9999 {
+			matched.NextResetAt = resetAt
+		}
+		windows[window.ID] = matched
+	}
+	key.ResetFollow.Windows = windows
+	for id := range key.Cycles {
+		if _, ok := windows[id]; !ok {
+			delete(key.Cycles, id)
+		}
+	}
+	activateCycles(key, plan, now)
+	for id, window := range windows {
+		cycle := key.Cycles[id]
+		cycle.EndAt = window.NextResetAt
+		key.Cycles[id] = cycle
+	}
+	decision := resolveRoutingState(state, key)
+	if decision.ConfigurationError != "" || !decision.AllowsCredential(key.ResetFollow.CredentialRef, CredentialSourceAuthFiles, key.ResetFollow.Provider) {
+		return invalidf("API key %q: the followed account must be allowed by its routing rules", name)
+	}
 	return nil
+}
+
+// stopFollowing keeps the current counters until the first native boundary
+// after following ends. Later cycles use the plan's own schedule.
+func stopFollowing(key *KeyState, plan Plan, now time.Time) {
+	if plan.ID == "" {
+		key.Cycles, key.ResetFollow = nil, nil
+		return
+	}
+	if key.Cycles == nil {
+		key.Cycles = make(map[string]QuotaCycle)
+	}
+	settleFollowCycles(key, now)
+	for id := range key.Cycles {
+		if !slices.ContainsFunc(plan.Windows, func(window QuotaWindow) bool { return window.ID == id }) {
+			delete(key.Cycles, id)
+		}
+	}
+	for _, window := range plan.Windows {
+		if cycle, ok := key.Cycles[window.ID]; ok {
+			cycle.EndAt = window.newCycle(plan.ID, now).EndAt
+			cycle.ScheduleOverride = true
+			key.Cycles[window.ID] = cycle
+		}
+	}
+	key.ResetFollow = nil
+}
+
+func followKeyName(key *KeyState) string {
+	if label := strings.TrimSpace(key.Label); label != "" {
+		return label
+	}
+	return key.Preview
 }
 
 // A known boundary is consumed exactly once. An unknown next boundary keeps the

@@ -3,6 +3,7 @@ package billing
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -310,4 +311,113 @@ func TestFollowLocalResetConsumesExpiredBoundaryBeforeExcludingLateUsage(t *test
 	if got := followCycle(t, store, "a", "short"); got.UsedRequests != 0 || !got.UsageSince.Equal(*now) {
 		t.Fatalf("late usage escaped local reset: %+v", got)
 	}
+}
+
+func TestFollowEditsDoNotNeedFreshSnapshot(t *testing.T) {
+	store, _, now, snapshot := followStore(t)
+	if err := store.SetResetFollow("b", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetLabel("a", "Team A"); err != nil {
+		t.Fatal(err)
+	}
+	for range 3 {
+		store.RecordUsage(subsetEvent("a", *now))
+	}
+	// Both upstream reset times pass without another synchronization.
+	*now = now.Add(25 * time.Hour)
+	name := "Renamed"
+	if _, err := store.UpdatePlanWithBindings(PlanPatch{ID: "p", Name: &name}, nil); err != nil {
+		t.Fatalf("rename required a fresh snapshot: %v", err)
+	}
+	allowed := RouteBindings{RouteRule: RouteRule{CredentialProviders: []CredentialProviderSelector{{Source: CredentialSourceAuthFiles, Provider: "codex"}}}}
+	if err := store.SetKeyRoutes("a", allowed); err != nil {
+		t.Fatalf("compatible route edit required a fresh snapshot: %v", err)
+	}
+	plan := store.Plans()[0]
+	// Recreate the weekly window: the short window keeps its boundary, and the
+	// new one takes the last known weekly upstream window with an unknown reset.
+	windows := []QuotaWindow{plan.Windows[0], {Name: "New week", PeriodSeconds: 604800, RequestLimit: 30}}
+	if _, err := store.UpdatePlanWithBindings(PlanPatch{ID: "p", Windows: &windows}, nil); err != nil {
+		t.Fatalf("rescheduled window required a fresh snapshot: %v", err)
+	}
+	plan = store.Plans()[0]
+	store.Read(func(state *State) {
+		key := state.Keys["a"]
+		if err := key.ValidateCycles(plan); err != nil {
+			t.Fatal(err)
+		}
+		short, week := key.ResetFollow.Windows["short"], key.ResetFollow.Windows[plan.Windows[1].ID]
+		if !short.LastResetAt.Equal(snapshot.Windows[0].ResetAt) || !short.NextResetAt.IsZero() || key.Cycles["short"].UsedRequests != 0 {
+			t.Fatalf("expired boundary was not consumed exactly once: %+v %+v", short, key.Cycles["short"])
+		}
+		if week.UpstreamID != "secondary" || !week.NextResetAt.IsZero() {
+			t.Fatalf("new window = %+v", week)
+		}
+	})
+	snapshot.AttemptedAt, snapshot.SyncedAt = *now, *now
+	snapshot.Windows[0].ResetAt, snapshot.Windows[1].ResetAt = now.Add(time.Hour), now.Add(48*time.Hour)
+	store.ApplyResetSnapshot(snapshot)
+	view, _ := store.KeyViewForScope("a")
+	if !view.Windows[0].EndAt.Equal(now.Add(time.Hour)) || !view.Windows[1].EndAt.Equal(now.Add(48*time.Hour)) {
+		t.Fatalf("synchronization did not arm the edited windows: %+v", view.Windows)
+	}
+	windows = append([]QuotaWindow(nil), plan.Windows...)
+	windows[1].PeriodSeconds = 86400
+	if _, err := store.UpdatePlanWithBindings(PlanPatch{ID: "p", Windows: &windows}, nil); err == nil || !strings.Contains(err.Error(), `"Team A"`) {
+		t.Fatalf("unmatched window error = %v", err)
+	}
+	if err := store.UnbindKey("a"); err == nil || !strings.Contains(err.Error(), `"Team A"`) {
+		t.Fatalf("unbind error = %v", err)
+	}
+	denied := RouteBindings{RouteRule: RouteRule{DeniedCredentialProviders: allowed.CredentialProviders}}
+	if err := store.SetKeyRoutes("a", denied); err == nil || !strings.Contains(err.Error(), `"Team A"`) {
+		t.Fatalf("route error = %v", err)
+	}
+}
+
+func TestFollowDeletedKeyStopsFollowingInsteadOfBlockingEdits(t *testing.T) {
+	store, _, now, _ := followStore(t)
+	if err := store.SetResetFollow("b", ""); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		store.RecordUsage(subsetEvent("a", *now))
+	}
+	store.ReplaceAll(func(state *State) { state.Keys["a"].DeletedAt = *now })
+	*now = now.Add(2 * time.Hour)
+	if accounts := store.FollowedAccounts(); len(accounts) != 0 {
+		t.Fatalf("deleted key is still synchronized: %v", accounts)
+	}
+	name := "Renamed"
+	if _, err := store.UpdatePlanWithBindings(PlanPatch{ID: "p", Name: &name}, nil); err != nil {
+		t.Fatalf("rename blocked by a deleted key: %v", err)
+	}
+	plan := store.Plans()[0]
+	windows := append([]QuotaWindow(nil), plan.Windows...)
+	windows[1].PeriodSeconds = 86400
+	if _, err := store.UpdatePlanWithBindings(PlanPatch{ID: "p", Windows: &windows}, nil); err != nil {
+		t.Fatalf("schedule edit blocked by a deleted key: %v", err)
+	}
+	plan = store.Plans()[0]
+	store.Read(func(state *State) {
+		key := state.Keys["a"]
+		if key.ResetFollow != nil {
+			t.Fatal("incompatible deleted key kept following")
+		}
+		if err := key.ValidateCycles(plan); err != nil {
+			t.Fatal(err)
+		}
+		if cycle := key.Cycles["short"]; !cycle.ScheduleOverride || cycle.UsedRequests != 0 || !cycle.EndAt.Equal(now.Add(5*time.Hour)) {
+			t.Fatalf("expired boundary or native schedule lost: %+v", cycle)
+		}
+	})
+	if _, err := store.DeletePlan("p"); err != nil {
+		t.Fatalf("plan deletion blocked by a deleted key: %v", err)
+	}
+	store.Read(func(state *State) {
+		if key := state.Keys["a"]; key.PlanID != "" || key.ResetFollow != nil || key.Cycles != nil {
+			t.Fatalf("deleted key kept a detached plan: %+v", key)
+		}
+	})
 }
