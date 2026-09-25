@@ -19,6 +19,7 @@ type App struct {
 	resetAccounts         sync.Map
 	recentQueriesMu       sync.Mutex
 	recentQueries         map[string]recentAccountQuery
+	recentResets          map[string]time.Time
 	now                   func() time.Time
 	resetSyncMu           sync.Mutex
 	resetSyncBlocked      bool
@@ -54,6 +55,7 @@ func newApp(store *billing.Store) *App {
 		store:                 store,
 		newResetSyncTimer:     newResetTimer,
 		recentQueries:         make(map[string]recentAccountQuery),
+		recentResets:          make(map[string]time.Time),
 		now:                   time.Now,
 		drain:                 make(chan struct{}),
 		admissions:            make(map[string]*requestAdmission),

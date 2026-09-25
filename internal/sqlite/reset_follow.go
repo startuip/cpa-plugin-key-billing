@@ -8,6 +8,7 @@ import (
 	"cpa-key-billing/internal/billing"
 )
 
+// A changed ID is written when its object exists, and deleted otherwise.
 func saveResetFollow(tx *sql.Tx, state *billing.State, changes billing.Changes) error {
 	for _, index := range changes.ResetSnapshots {
 		snapshot := state.ResetSnapshots[index]
@@ -20,7 +21,13 @@ func saveResetFollow(tx *sql.Tx, state *billing.State, changes billing.Changes) 
 		}
 	}
 	for _, id := range changes.UpstreamResets {
-		operation := state.UpstreamResets[id]
+		operation, exists := state.UpstreamResets[id]
+		if !exists {
+			if _, err := tx.Exec(`DELETE FROM upstream_resets WHERE operation_key = ?`, id); err != nil {
+				return err
+			}
+			continue
+		}
 		raw, err := json.Marshal(operation)
 		if err != nil {
 			return err

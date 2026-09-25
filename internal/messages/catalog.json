@@ -642,6 +642,12 @@
       "%d"
     ]
   },
+  "Quota resets for this account are limited to one attempt per minute; try again in %d seconds": {
+    "key": "backend.quota_resets_for_this_account_are_limited_try_again_in_value_seconds",
+    "formats": [
+      "%d"
+    ]
+  },
   "API key %q: the followed account must be allowed by its routing rules": {
     "key": "backend.api_key_value_the_followed_account_must_be_allowed_by_its_routing_rules",
     "formats": [

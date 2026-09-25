@@ -388,17 +388,49 @@ func (s *Store) ApplyResetSnapshot(snapshot ResetSnapshot) {
 
 func resetOperationKey(authIndex, id string) string { return authIndex + ":" + id }
 
+// Operations only deduplicate retries of one reset request, which the provider
+// also deduplicates by ID, so a week of history is ample.
+const upstreamResetRetention = 7 * 24 * time.Hour
+
 // Save the ID before contacting the provider, so retries reuse the same operation.
 func (s *Store) BeginUpstreamReset(authIndex, id string) (UpstreamReset, error) {
 	return editConfiguration(s, func(state *State) (UpstreamReset, Changes, error) {
+		now := s.Now()
+		var changed []string
+		for operationKey, operation := range state.UpstreamResets {
+			if now.Sub(operation.StartedAt) > upstreamResetRetention {
+				delete(state.UpstreamResets, operationKey)
+				changed = append(changed, operationKey)
+			}
+		}
 		operationKey := resetOperationKey(authIndex, id)
 		if operation, exists := state.UpstreamResets[operationKey]; exists {
-			return operation, Changes{}, nil
+			return operation, Changes{UpstreamResets: changed}, nil
 		}
-		operation := UpstreamReset{AuthIndex: authIndex, ID: id, StartedAt: s.Now()}
+		operation := UpstreamReset{AuthIndex: authIndex, ID: id, StartedAt: now}
 		state.UpstreamResets[operationKey] = operation
-		return operation, Changes{UpstreamResets: []string{operationKey}}, nil
+		return operation, Changes{UpstreamResets: append(changed, operationKey)}, nil
 	})
+}
+
+// AbandonUpstreamReset forgets an operation the provider did not confirm. A
+// retry with the same ID starts over, and the provider deduplicates it.
+func (s *Store) AbandonUpstreamReset(operation UpstreamReset) {
+	updateResult(s, func(state *State) (struct{}, Changes) {
+		operationKey := resetOperationKey(operation.AuthIndex, operation.ID)
+		if stored, exists := state.UpstreamResets[operationKey]; !exists || stored.Applied {
+			return struct{}{}, Changes{}
+		}
+		delete(state.UpstreamResets, operationKey)
+		return struct{}{}, Changes{UpstreamResets: []string{operationKey}}
+	})
+}
+
+// UpstreamResetApplied reports whether this reset request already succeeded.
+func (s *Store) UpstreamResetApplied(authIndex, id string) bool {
+	applied := false
+	s.read(func(state *State) { applied = state.UpstreamResets[resetOperationKey(authIndex, id)].Applied })
+	return applied
 }
 
 // Usage and reset effects stay live if a write fails, and are retried together.

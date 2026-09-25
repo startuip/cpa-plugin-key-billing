@@ -179,14 +179,22 @@ func (a *App) authQuotaReset(req ManagementRequest, access viewAccess) Managemen
 	}
 	unlock := a.lockResetAccount(selected.AuthIndex)
 	defer unlock()
+	if access.APIKey && !a.store.UpstreamResetApplied(selected.AuthIndex, resetID) {
+		if wait := a.resetAttemptWait(selected.AuthIndex); wait > 0 {
+			return resetRateLimited(access, wait)
+		}
+	}
 	operation, err := a.store.BeginUpstreamReset(selected.AuthIndex, resetID)
 	if err != nil {
-		return errorResponse(err)
+		return viewErrorResponse(access, err)
 	}
 	if operation.Applied {
 		return viewJSON(access, http.StatusOK, map[string]bool{"reset": true})
 	}
+	a.rememberResetAttempt(selected.AuthIndex)
 	if errReset := a.resetCodexQuota(req.HostCallbackID, *selected, resetID); errReset != nil {
+		// Unconfirmed resets leave no record; the provider deduplicates retries.
+		a.store.AbandonUpstreamReset(operation)
 		return viewDetailedError(access, http.StatusBadGateway, "reset_failed", errReset)
 	}
 	a.store.ApplyUpstreamReset(operation)
@@ -197,6 +205,14 @@ func (a *App) authQuotaReset(req ManagementRequest, access viewAccess) Managemen
 		result["refresh_error"] = billing.ResetError(messages.FromError(refreshErr))
 	}
 	return viewJSON(access, http.StatusOK, result)
+}
+
+func resetRateLimited(access viewAccess, wait time.Duration) ManagementResponse {
+	seconds := int(math.Ceil(wait.Seconds()))
+	response := jsonMessageError(http.StatusTooManyRequests, "rate_limited",
+		messages.New("Quota resets for this account are limited to one attempt per minute; try again in %d seconds", seconds))
+	response.Headers.Set("Retry-After", strconv.Itoa(seconds))
+	return protectAPIKeyResponse(access, response, false)
 }
 
 func (a *App) resolveQuotaAuthFile(req ManagementRequest, access viewAccess) (*hostAuthFile, ManagementResponse) {
