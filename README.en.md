@@ -118,6 +118,8 @@ API key holders can use their own key to view their subscription and usage:
 http(s)://<CLIProxyAPI address>/v0/resource/plugins/cpa-key-billing/ui#account
 ```
 
+On the Auth Files page, key holders can see the names, email addresses, and quotas of the upstream accounts their routing allows; a key without credential restrictions sees every OAuth account. To keep upstream account emails private, enable `mask_api_key_view_emails` or restrict the credentials in routing rules.
+
 ## Billing and quotas
 
 - Keys without a subscription plan still have their usage recorded, but have no subscription quota limit.
