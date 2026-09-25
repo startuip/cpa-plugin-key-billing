@@ -417,6 +417,19 @@ request_body() {
     --argjson stream "$stream" --argjson budget "$max_output_tokens" "$program"
 }
 
+# preview_key mirrors billing.PreviewKey for the ASCII keys this suite uses: at
+# most a third of a key is shown, six and four characters only from 30 on.
+preview_key() {
+  local key="$1" count=${#1} prefix suffix
+  if (( count <= 12 )); then
+    printf '%*s' "$count" '' | tr ' ' '*'
+    return
+  fi
+  suffix=$(( count / 6 < 4 ? count / 6 : 4 ))
+  prefix=$(( count / 3 - suffix < 6 ? count / 3 - suffix : 6 ))
+  printf '%s…%s' "${key:0:prefix}" "${key: -suffix}"
+}
+
 provider_source() {
   local provider
   case "$1" in
@@ -425,7 +438,7 @@ provider_source() {
     anthropic) provider="claude" ;;
     gemini) provider="gemini" ;;
   esac
-  printf '%s · %s…%s' "$provider" "${upstream_api_key:0:6}" "${upstream_api_key: -4}"
+  printf '%s · %s' "$provider" "$(preview_key "$upstream_api_key")"
 }
 
 wait_for_event_count() {
@@ -738,9 +751,9 @@ assert_route_credential_policy() {
   # scheduler.pick has now observed both config-backed candidates, so the safe
   # inventory contains the opaque reference needed to test an exact binding.
   management_call GET "$port" "/v0/management/plugins/cpa-key-billing/credentials" >"$access_file"
-  if ! jq -e '
+  if ! jq -e --arg preview "$(preview_key "e2e-route-allowed-1111")" '
       first(.credentials[] | select(.source == "ai-providers" and .provider == "openai-compatible-route-allowed-e2e")) |
-      .display_name == "e2e-ro…1111"
+      .display_name == $preview
     ' "$access_file" >/dev/null; then
     echo "配置型上游凭证未显示安全的 API Key 掩码：$(jq -c '.credentials' "$access_file")" >&2
     return 1

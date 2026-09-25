@@ -269,7 +269,8 @@ func (s *State) ensureKey(scope, preview string) *KeyState {
 	if key == nil {
 		key = &KeyState{Preview: preview}
 		s.Keys[scope] = key
-	} else if key.Preview == "" || key.Preview == UnknownKeyPreview {
+	} else if preview != UnknownKeyPreview {
+		// Previews derive from the key itself; a stricter rule replaces older ones.
 		key.Preview = preview
 	}
 	return key

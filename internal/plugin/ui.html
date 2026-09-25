@@ -3745,10 +3745,13 @@
         dialog.addEventListener("close", () => { if (!dialog.open) editors.delete(dialog); });
       }
 
+      // Mirrors billing.PreviewKey: at most a third of a key is shown.
       function previewCredential(value) {
-        value = String(value || "").trim();
-        if (value.length <= 12) return "*".repeat(value.length);
-        return value.slice(0, 6) + "…" + value.slice(-4);
+        const chars = Array.from(String(value || "").trim());
+        if (chars.length <= 12) return "*".repeat(chars.length);
+        const suffix = Math.min(4, Math.floor(chars.length / 6));
+        const prefix = Math.min(6, Math.floor(chars.length / 3) - suffix);
+        return chars.slice(0, prefix).join("") + "…" + chars.slice(-suffix).join("");
       }
 
       async function setLoginMode(mode, preserveError) {

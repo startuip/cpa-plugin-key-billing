@@ -1,6 +1,10 @@
 package billing
 
-import "testing"
+import (
+	"strings"
+	"testing"
+	"unicode/utf8"
+)
 
 // TestCallerScopeMatchesHostVectors pins the hash to values produced by
 // CLIProxyAPI's own sdk/cliproxy/session.CallerScope. Enforcement reads the
@@ -52,7 +56,11 @@ func TestPreviewKeyDoesNotLeakShortKeys(t *testing.T) {
 		{name: "empty", input: "", want: ""},
 		{name: "short keys are fully masked", input: "sk-123", want: "******"},
 		{name: "boundary length is fully masked", input: "123456789012", want: "************"},
-		{name: "long keys keep head and tail", input: "sk-test-key-0001", want: "sk-tes…0001"},
+		{name: "a short key shows a third", input: "1234567890123", want: "12…23"},
+		{name: "a medium key shows a third", input: "sk-test-key-0001", want: "sk-…01"},
+		{name: "long keys keep head and tail", input: "sk-test-key-0001-abcdefghijklmn", want: "sk-tes…klmn"},
+		{name: "characters, not bytes", input: "密钥密钥密钥密钥密钥密钥密钥密钥", want: "密钥密…密钥"},
+		{name: "a preview is already masked", input: "sk-tes…0001", want: "sk-tes…0001"},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -60,5 +68,15 @@ func TestPreviewKeyDoesNotLeakShortKeys(t *testing.T) {
 				t.Fatalf("PreviewKey(%q) = %q, want %q", test.input, got, test.want)
 			}
 		})
+	}
+	for count := 13; count <= 200; count++ {
+		key := strings.Repeat("k", count)
+		preview := PreviewKey(key)
+		if shown := utf8.RuneCountInString(preview) - 1; shown > count/3 || shown < 2 {
+			t.Fatalf("a %d-character key shows %d characters: %q", count, shown, preview)
+		}
+		if PreviewKey(preview) != preview {
+			t.Fatalf("masking %q again changed it", preview)
+		}
 	}
 }
