@@ -71,6 +71,8 @@ func TestDeletedKeyRetainsUsageAndIdentity(t *testing.T) {
 	store := newSyncStore(t, &clock)
 	scope := CallerScope(deletedKeyPlaintext)
 	event := admittedEvent(store, scope, now)
+	// Usage carries the preview of the same key that produced its scope.
+	event.KeyPreview = PreviewKey(deletedKeyPlaintext)
 
 	clock = now.Add(43 * time.Minute)
 	if _, errSync := store.SyncKeys([]string{keptKeyPlaintext}, false); errSync != nil {
@@ -348,4 +350,21 @@ func TestWindowEditsAndQuotaReset(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestUsageRefreshesAnOlderKeyPreview(t *testing.T) {
+	now := time.Date(2026, 8, 12, 15, 57, 0, 0, time.UTC)
+	store := newAccountStore(t, now)
+	const plaintext = "sk-dummy-short-01"
+	scope := CallerScope(plaintext)
+	// A principal seen only in traffic, stored under the earlier six-and-four rule.
+	store.ReplaceAll(func(state *State) { state.Keys[scope] = &KeyState{Preview: "sk-dum…t-01"} })
+	event := subsetEvent(scope, now)
+	event.KeyPreview = PreviewKey(plaintext)
+	store.RecordUsage(event)
+	store.Read(func(state *State) {
+		if got := state.Keys[scope].Preview; got != PreviewKey(plaintext) || got == "sk-dum…t-01" {
+			t.Fatalf("preview = %q", got)
+		}
+	})
 }

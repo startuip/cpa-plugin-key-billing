@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // callerScopeSalt must stay byte-identical to CLIProxyAPI's
@@ -27,18 +28,32 @@ func CallerScope(value string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// PreviewKey masks a plaintext key for display and persistence.
+// PreviewKey masks a plaintext key for display and persistence. The stored
+// caller scope is a salted hash anyone can recompute, so a preview reveals at
+// most a third of a key: six leading and four trailing characters only from 30
+// characters on. Masked input is returned unchanged. The UI mirrors this rule.
 func PreviewKey(key string) string {
 	key = strings.TrimSpace(key)
+	runes := []rune(key)
+	count := len(runes)
 	switch {
-	case key == "":
+	case count == 0:
 		return ""
-	case len(key) <= 12:
+	case isKeyPreview(key):
+		return key
+	case count <= 12:
 		// Too short to mask meaningfully without leaking most of it.
-		return strings.Repeat("*", len(key))
-	default:
-		return key[:6] + "…" + key[len(key)-4:]
+		return strings.Repeat("*", count)
 	}
+	suffix := min(4, count/6)
+	prefix := min(6, count/3-suffix)
+	return string(runes[:prefix]) + "…" + string(runes[count-suffix:])
+}
+
+func isKeyPreview(value string) bool {
+	prefix, suffix, found := strings.Cut(value, "…")
+	prefixCount, suffixCount := utf8.RuneCountInString(prefix), utf8.RuneCountInString(suffix)
+	return found && !strings.Contains(suffix, "…") && prefixCount >= 1 && prefixCount <= 6 && suffixCount >= 1 && suffixCount <= 4
 }
 
 func freeID(name, prefix string, taken func(string) bool) string {
