@@ -25,8 +25,9 @@ type quotaUsage struct {
 // UsageSince excludes requests admitted before binding or an administrative reset.
 type QuotaCycle struct {
 	PlanID string `json:"plan_id,omitempty"`
-	// ScheduleOverride preserves the current counters until the first native
-	// boundary after reset following is disabled. Later cycles use the plan.
+	// ScheduleOverride marks a cycle kept when reset following is disabled: it
+	// ends one native period after its start, off the plan's grid. Later cycles
+	// use the plan.
 	ScheduleOverride bool      `json:"schedule_override,omitempty"`
 	StartAt          time.Time `json:"start_at,omitzero"`
 	EndAt            time.Time `json:"end_at,omitzero"`

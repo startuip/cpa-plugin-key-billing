@@ -408,7 +408,8 @@ func TestFollowDeletedKeyStopsFollowingInsteadOfBlockingEdits(t *testing.T) {
 		if err := key.ValidateCycles(plan); err != nil {
 			t.Fatal(err)
 		}
-		if cycle := key.Cycles["short"]; !cycle.ScheduleOverride || cycle.UsedRequests != 0 || !cycle.EndAt.Equal(now.Add(5*time.Hour)) {
+		// The cycle restarted at the expired boundary an hour ago and keeps one native period.
+		if cycle := key.Cycles["short"]; !cycle.ScheduleOverride || cycle.UsedRequests != 0 || !cycle.EndAt.Equal(now.Add(4*time.Hour)) {
 			t.Fatalf("expired boundary or native schedule lost: %+v", cycle)
 		}
 	})
@@ -420,4 +421,45 @@ func TestFollowDeletedKeyStopsFollowingInsteadOfBlockingEdits(t *testing.T) {
 			t.Fatalf("deleted key kept a detached plan: %+v", key)
 		}
 	})
+}
+
+func TestStopFollowingKeepsAtMostOneNativePeriod(t *testing.T) {
+	store, _, now, _ := followStore(t)
+	start := *now
+	store.RecordUsage(subsetEvent("a", *now))
+	// The short upstream boundary resets the short cycle an hour later.
+	*now = start.Add(3 * time.Hour)
+	store.RecordUsage(subsetEvent("a", *now))
+	if err := store.SetResetFollow("a", ""); err != nil {
+		t.Fatal(err)
+	}
+	short, week := followCycle(t, store, "a", "short"), followCycle(t, store, "a", "week")
+	if !short.EndAt.Equal(start.Add(6*time.Hour)) || short.UsedRequests != 1 {
+		t.Fatalf("short cycle outlived its period: %+v", short)
+	}
+	if !week.EndAt.Equal(start.Add(7*24*time.Hour)) || week.UsedRequests != 2 {
+		t.Fatalf("weekly cycle outlived its period: %+v", week)
+	}
+
+	// Awaiting synchronization, the short cycle has run past its native period.
+	store, _, now, _ = followStore(t)
+	start = *now
+	store.RecordUsage(subsetEvent("b", *now))
+	*now = start.Add(9 * time.Hour)
+	store.RecordUsage(subsetEvent("b", *now))
+	if err := store.SetResetFollow("b", ""); err != nil {
+		t.Fatal(err)
+	}
+	store.Read(func(state *State) {
+		key := state.Keys["b"]
+		if _, kept := key.Cycles["short"]; kept {
+			t.Fatalf("a cycle older than its period was kept: %+v", key.Cycles["short"])
+		}
+		if err := key.ValidateCycles(state.Plans[0]); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !store.Authorize("b", *now).Allowed || followCycle(t, store, "b", "short").UsedRequests != 0 {
+		t.Fatal("the next admission did not start a fresh native cycle")
+	}
 }
