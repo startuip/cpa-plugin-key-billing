@@ -156,9 +156,13 @@ func optionalPriceMatches(special, standard *float64) bool {
 	return special == nil || (standard != nil && *special == *standard)
 }
 
-func downloadModelsDevPrices(ctx context.Context) ([]byte, error) {
+func downloadModelsDevPrices(ctx context.Context, proxySetting string) ([]byte, error) {
+	proxy, err := referencePriceProxy(proxySetting)
+	if err != nil {
+		return nil, err
+	}
 	transport := &http.Transport{
-		Proxy:               http.ProxyFromEnvironment,
+		Proxy:               proxy,
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: 10 * time.Second,
 	}

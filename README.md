@@ -90,6 +90,7 @@ plugins:
       mask_api_key_view_emails: false # 对 API Key 查询页面返回的邮箱进行掩码脱敏
       pause_reset_follow_sync: false # 暂停每 30 分钟自动同步；停用插件前先设为 true
       allow_api_key_quota_reset: false # 允许 API Key 用户重置可访问的 Codex 认证文件额度，消耗上游重置次数
+      reference_price_proxy: "" # models.dev 参考价下载代理：留空使用 HTTPS_PROXY 等环境变量，direct / none 表示直连，也可填 HTTP、HTTPS、SOCKS5、SOCKS5H 地址
       state_file: "plugins/cpa-key-billing-state-v1.db"
 ```
 

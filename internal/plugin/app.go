@@ -261,6 +261,11 @@ func registration() Registration {
 					Description: "Pause automatic upstream reset synchronization; pause before disabling the plugin",
 				},
 				{
+					Name:        "reference_price_proxy",
+					Type:        "string",
+					Description: "Proxy for models.dev reference price downloads: empty uses the environment, direct or none connects directly, or an HTTP, HTTPS, SOCKS5, or SOCKS5H URL",
+				},
+				{
 					Name:        "state_file",
 					Type:        "string",
 					Description: "Billing database file path",

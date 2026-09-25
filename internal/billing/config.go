@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"net/http"
+	"net/url"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -19,6 +21,11 @@ type Config struct {
 	MaskAPIKeyViewEmails  bool   `yaml:"mask_api_key_view_emails"`
 	AllowAPIKeyQuotaReset bool   `yaml:"allow_api_key_quota_reset"`
 	PauseResetFollowSync  bool   `yaml:"pause_reset_follow_sync"`
+	// ReferencePriceProxy routes models.dev downloads: empty uses the process
+	// environment (HTTPS_PROXY and friends), "direct" or "none" connects
+	// directly, and a URL uses that HTTP, HTTPS, SOCKS5 or SOCKS5H proxy. The
+	// plugin never sees CPA's own proxy-url, so it has to be set here.
+	ReferencePriceProxy string `yaml:"reference_price_proxy"`
 }
 
 func DefaultConfig() Config {
@@ -47,7 +54,29 @@ func DecodeConfig(raw []byte) (Config, error) {
 		}
 		cfg = document.Config
 	}
-	return cfg.normalized(), nil
+	cfg = cfg.normalized()
+	if _, err := referencePriceProxy(cfg.ReferencePriceProxy); err != nil {
+		return Config{}, err
+	}
+	return cfg, nil
+}
+
+// referencePriceProxy never quotes the value: it may carry proxy credentials.
+func referencePriceProxy(value string) (func(*http.Request) (*url.URL, error), error) {
+	switch {
+	case value == "":
+		return http.ProxyFromEnvironment, nil
+	case strings.EqualFold(value, "direct") || strings.EqualFold(value, "none"):
+		return nil, nil
+	}
+	parsed, err := url.Parse(value)
+	if err == nil && parsed.Hostname() != "" {
+		switch parsed.Scheme {
+		case "http", "https", "socks5", "socks5h":
+			return http.ProxyURL(parsed), nil
+		}
+	}
+	return nil, fmt.Errorf("Invalid reference_price_proxy; use an HTTP, HTTPS, SOCKS5, or SOCKS5H URL, direct, or none")
 }
 
 func (c Config) describe() string {
@@ -59,6 +88,7 @@ func (c Config) describe() string {
 
 func (c Config) normalized() Config {
 	c.StateFile = strings.TrimSpace(c.StateFile)
+	c.ReferencePriceProxy = strings.TrimSpace(c.ReferencePriceProxy)
 	if c.StateFile == "" {
 		c.StateFile = DefaultStateFile
 	}
