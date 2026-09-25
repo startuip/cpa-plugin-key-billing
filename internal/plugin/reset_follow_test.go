@@ -611,3 +611,34 @@ func TestResetFollowSubscriptionRefreshSharesRecentQuery(t *testing.T) {
 		t.Fatal("an expired query was not renewed")
 	}
 }
+
+func TestResetFollowRefreshListsAuthFilesOnce(t *testing.T) {
+	app, _, file, _ := resetFollowApp(t)
+	now := app.store.Now()
+	other := file
+	other.ID, other.AuthIndex = "other-host-id", "zz-other-account"
+	app.store.ApplyResetSnapshot(billing.ResetSnapshot{AuthIndex: other.AuthIndex, Provider: "codex", CredentialRef: billing.CredentialFingerprint(other.ID), AttemptedAt: now, SyncedAt: now,
+		Windows: []billing.UpstreamWindow{{ID: "primary_window", PeriodSeconds: 18000, ResetAt: now.Add(time.Hour)}}})
+	if err := app.store.SetResetFollow(billing.CallerScope("sk-dummy-follow-b"), other.AuthIndex); err != nil {
+		t.Fatal(err)
+	}
+	var lists, queries atomic.Int32
+	caller := resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") {
+			queries.Add(1)
+		}
+		return resetQuotaResponse(), nil
+	})
+	app.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		if method == hostAuthList {
+			lists.Add(1)
+			return json.Marshal(hostAuthListResponse{Files: []hostAuthFile{file, other}})
+		}
+		return caller(method, payload)
+	})
+	followManagementCall(t, app, ManagementRequest{Method: http.MethodGet, Path: managementBase + routeKeys,
+		Query: map[string][]string{"refresh_reset_follow": {"1"}}})
+	if lists.Load() != 1 || queries.Load() != 2 {
+		t.Fatalf("auth file lists = %d, upstream queries = %d", lists.Load(), queries.Load())
+	}
+}

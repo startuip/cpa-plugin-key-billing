@@ -166,6 +166,10 @@ func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stopp
 	} else {
 		accounts = a.store.FollowedAccounts()
 	}
+	// One auth file list serves every account in this pass.
+	var files []hostAuthFile
+	var errList error
+	listed := false
 	for _, index := range accounts {
 		if stopped() {
 			return
@@ -183,8 +187,11 @@ func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stopp
 				}
 			}
 			// Resolve by the exact host index and recheck the caller's routing.
-			lookup := ManagementRequest{Query: map[string][]string{"auth_index": {index}}, HostCallbackID: req.HostCallbackID}
-			selected, _ := a.resolveQuotaAuthFile(lookup, access)
+			if !listed {
+				files, errList = a.listHostAuthFiles()
+				listed = true
+			}
+			selected, _ := a.selectQuotaAuthFile(files, errList, index, access)
 			if selected == nil {
 				a.store.ApplyResetSnapshot(billing.ResetSnapshot{AuthIndex: index, AttemptedAt: a.store.Now(), Error: billing.ResetError(messages.New("The followed upstream account is unavailable"))})
 				return
