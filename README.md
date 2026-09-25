@@ -116,6 +116,8 @@ http(s)://<CLIProxyAPI 地址>/v0/resource/plugins/cpa-key-billing/ui
 http(s)://<CLIProxyAPI 地址>/v0/resource/plugins/cpa-key-billing/ui#account
 ```
 
+普通用户可在「认证文件」页查看路由允许访问的上游账号的名称、邮箱和额度；Key 未限制凭证时，可看到全部 OAuth 账号。如不希望暴露上游账号邮箱，请开启 `mask_api_key_view_emails`，或用路由规则限制可访问的凭证。
+
 ## 计费与订阅规则
 
 - 未绑定订阅计划的 API Key 只统计用量，不限制额度。
