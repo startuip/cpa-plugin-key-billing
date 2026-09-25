@@ -138,7 +138,10 @@ func (s *Store) DeletePrice(model string) error {
 	return nil
 }
 
-// Admission may refresh synchronously; usage passes false to avoid network I/O.
+// A matching reference price is used at once, however old: no request waits for
+// a download it does not need. Admission refreshes synchronously only when no
+// price matches, since that request would otherwise be refused; configuration
+// and the manual refresh renew old data. Usage passes false to avoid network I/O.
 func (s *Store) ResolveModelPrice(upstream, requested string, refresh bool) (Price, string, error) {
 	var model string
 	var price Price
@@ -157,8 +160,8 @@ func (s *Store) ResolveModelPrice(upstream, requested string, refresh bool) (Pri
 	ctx, cancel := context.WithTimeout(context.Background(), referencePriceOperationTimeout)
 	defer cancel()
 	match, err := references.lookup(ctx, upstream, requested)
-	if err == nil && refresh && referencePricesNeedRefresh(match.metadata, match.found, s.Now()) {
-		_, refreshErr := references.refresh(ctx, s.Now, false, match.refreshSequence, match.found)
+	if err == nil && refresh && !match.found && referencePricesNeedRefresh(match.metadata, false, s.Now()) {
+		_, refreshErr := references.refresh(ctx, s.Now, false, match.refreshSequence, false)
 		if refreshErr == nil {
 			match, err = references.lookup(ctx, upstream, requested)
 		}

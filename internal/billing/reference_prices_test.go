@@ -146,7 +146,9 @@ func TestReferenceFreshnessAndSynchronousRecovery(t *testing.T) {
 	}{
 		{"fresh-known", time.Hour, "gpt-4o", 0, true}, {"fresh-missing", time.Hour, "new-model", 0, false},
 		{"possible-known", time.Hour + time.Nanosecond, "gpt-4o", 0, true}, {"new-model", time.Hour + time.Nanosecond, "new-model", 1, true},
-		{"24h", 24 * time.Hour, "gpt-4o", 0, true}, {"expired", 24*time.Hour + time.Nanosecond, "gpt-4o", 1, true},
+		{"24h", 24 * time.Hour, "gpt-4o", 0, true},
+		// An old matching price is used without waiting; only a missing model downloads.
+		{"expired-known", 24*time.Hour + time.Nanosecond, "gpt-4o", 0, true}, {"expired-missing", 24*time.Hour + time.Nanosecond, "new-model", 1, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			s, _ := newReferencePriceStore(t, tc.age)
@@ -334,6 +336,43 @@ func TestReferenceConcurrentRefreshDoesNotBlockLocalPrices(t *testing.T) {
 	}
 }
 
+func TestExpiredReferencePriceNeverWaitsForDownload(t *testing.T) {
+	s, _ := newReferencePriceStore(t, 25*time.Hour)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	raw := referencePricesJSON(t)
+	referencePriceServer(t, s, func(w http.ResponseWriter, _ *http.Request) {
+		if calls.Add(1) == 1 {
+			close(entered)
+		}
+		<-release
+		_, _ = w.Write(raw)
+	})
+	missing := make(chan struct{})
+	go func() { defer close(missing); _, _, _ = s.ResolveModelPrice("missing", "", true) }()
+	<-entered
+	known := make(chan struct{})
+	go func() {
+		defer close(known)
+		p, _, err := s.ResolveModelPrice("gpt-4o", "", true)
+		if err != nil || p.Source != PriceSourceReference {
+			t.Error(p, err)
+		}
+	}()
+	select {
+	case <-known:
+	case <-time.After(time.Second):
+		close(release)
+		<-missing
+		t.Fatal("an expired matching price waited for a download")
+	}
+	close(release)
+	<-missing
+	if calls.Load() != 1 {
+		t.Fatalf("downloads=%d", calls.Load())
+	}
+}
+
 func TestReferenceBoundedCache(t *testing.T) {
 	s, _ := newReferencePriceStore(t, 0)
 	for i := 0; i < referencePriceCacheCapacity+50; i++ {
@@ -354,7 +393,7 @@ func TestReferenceSwitchRejectsInFlightOldReferencePrices(t *testing.T) {
 		_, _ = w.Write(raw)
 	})
 	result := make(chan error, 1)
-	go func() { _, _, err := s.ResolveModelPrice("gpt-4o", "", true); result <- err }()
+	go func() { _, _, err := s.ResolveModelPrice("new-model", "", true); result <- err }()
 	<-entered
 	s.open = func(string) (Repository, error) { return &memoryRepository{state: NewState()}, nil }
 	cfg := DefaultConfig()
@@ -532,7 +571,8 @@ func TestReferencePriceSyncLogsOnlyActualDownloads(t *testing.T) {
 	}
 	raw := referencePricesJSON(t)
 	referencePriceServer(t, store, func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write(raw) })
-	if _, _, err := store.ResolveModelPrice("gpt-4o", "gpt-4o", true); err != nil {
+	// Configuration renews old data; requests with a matching price never do.
+	if _, err := store.EnsureReferencePrices(); err != nil {
 		t.Fatal(err)
 	}
 	logs := mustPluginLogs(t, store)
