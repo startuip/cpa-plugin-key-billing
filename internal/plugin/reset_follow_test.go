@@ -573,3 +573,41 @@ func TestDeletedFollowerStopsFollowingAcrossRestart(t *testing.T) {
 		}
 	}
 }
+
+func TestResetFollowSubscriptionRefreshSharesRecentQuery(t *testing.T) {
+	app, _, file, _ := resetFollowApp(t)
+	now := time.Now()
+	app.now = func() time.Time { return now }
+	var queries atomic.Int32
+	app.SetHostCaller(resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") {
+			queries.Add(1)
+		}
+		return resetQuotaResponse(), nil
+	}))
+	refresh := func(key string) {
+		response := followManagementCall(t, app, ManagementRequest{Method: http.MethodGet, Path: resourceBase + routeSubscription,
+			Headers: http.Header{"Authorization": {"Bearer " + key}}, Query: map[string][]string{"refresh_reset_follow": {"1"}}})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("refresh: %s", response.Body)
+		}
+	}
+	for range 3 {
+		refresh("sk-dummy-follow-a")
+	}
+	// Another key following the same account shares the recent query.
+	refresh("sk-dummy-follow-b")
+	if queries.Load() != 1 {
+		t.Fatalf("user refreshes queried the upstream %d times", queries.Load())
+	}
+	followManagementCall(t, app, ManagementRequest{Method: http.MethodGet, Path: managementBase + routeKeys,
+		Query: map[string][]string{"refresh_reset_follow": {"1"}}})
+	if queries.Load() != 2 {
+		t.Fatal("an administrator refresh did not reach the upstream")
+	}
+	now = now.Add(accountQueryInterval)
+	refresh("sk-dummy-follow-a")
+	if queries.Load() != 3 {
+		t.Fatal("an expired query was not renewed")
+	}
+}

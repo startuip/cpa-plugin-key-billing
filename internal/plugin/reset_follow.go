@@ -2,6 +2,7 @@ package plugin
 
 import (
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -20,8 +21,55 @@ func (a *App) lockResetAccount(index string) func() {
 	return mutex.Unlock
 }
 
+// API key users reach an upstream account at most once per interval; within it
+// they share the last result, including a failure, from any caller. Admin
+// queries, synchronization and reset refreshes always query and renew it.
+const accountQueryInterval = time.Minute
+
+type recentAccountQuery struct {
+	at         time.Time
+	credential string
+	result     authQuotaResponse
+	err        error
+}
+
+// A replaced credential file is queried afresh.
+func accountQueryCredential(file hostAuthFile) string {
+	return file.ID + "\x00" + authFileRevision(file)
+}
+
+// Called with the account lock held, after the caller's access was checked.
+func (a *App) recentAccountQuery(file hostAuthFile) (recentAccountQuery, bool) {
+	a.recentQueriesMu.Lock()
+	defer a.recentQueriesMu.Unlock()
+	recent, ok := a.recentQueries[file.AuthIndex]
+	age := a.now().Sub(recent.at)
+	recent.result = cloneAuthQuota(recent.result)
+	return recent, ok && recent.credential == accountQueryCredential(file) && age >= 0 && age < accountQueryInterval
+}
+
+// Responses are masked in place for API key users; never share their rows.
+func cloneAuthQuota(result authQuotaResponse) authQuotaResponse {
+	result.Quota = slices.Clone(result.Quota)
+	result.RateLimitResetCredits = slices.Clone(result.RateLimitResetCredits)
+	return result
+}
+
+func (a *App) rememberAccountQuery(file hostAuthFile, result authQuotaResponse, err error) {
+	a.recentQueriesMu.Lock()
+	defer a.recentQueriesMu.Unlock()
+	now := a.now()
+	for index, recent := range a.recentQueries {
+		if now.Sub(recent.at) >= accountQueryInterval {
+			delete(a.recentQueries, index)
+		}
+	}
+	a.recentQueries[file.AuthIndex] = recentAccountQuery{at: now, credential: accountQueryCredential(file), result: cloneAuthQuota(result), err: err}
+}
+
 func (a *App) queryResetAccount(callbackID string, file hostAuthFile) (authQuotaResponse, error) {
 	result, err := a.fetchAuthQuota(callbackID, file, authCategory(file.Type))
+	a.rememberAccountQuery(file, result, err)
 	snapshot := billing.ResetSnapshot{
 		AuthIndex: file.AuthIndex, Provider: authCategory(file.Type), CredentialRef: billing.CredentialFingerprint(file.ID),
 		AttemptedAt: result.FetchedAt, SyncedAt: result.FetchedAt,
@@ -140,6 +188,12 @@ func (a *App) syncResetFollowers(req ManagementRequest, access viewAccess, stopp
 			if selected == nil {
 				a.store.ApplyResetSnapshot(billing.ResetSnapshot{AuthIndex: index, AttemptedAt: a.store.Now(), Error: billing.ResetError(messages.New("The followed upstream account is unavailable"))})
 				return
+			}
+			if access.APIKey {
+				if _, recent := a.recentAccountQuery(*selected); recent {
+					// The follow status already reflects that query.
+					return
+				}
 			}
 			_, _ = a.queryResetAccount(req.HostCallbackID, *selected)
 		}()

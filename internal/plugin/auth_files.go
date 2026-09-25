@@ -136,7 +136,15 @@ func (a *App) authQuota(req ManagementRequest, access viewAccess) ManagementResp
 	}
 	unlock := a.lockResetAccount(selected.AuthIndex)
 	defer unlock()
-	result, errQuota := a.queryResetAccount(req.HostCallbackID, *selected)
+	var recent recentAccountQuery
+	shared := false
+	if access.APIKey {
+		recent, shared = a.recentAccountQuery(*selected)
+	}
+	result, errQuota := recent.result, recent.err
+	if !shared {
+		result, errQuota = a.queryResetAccount(req.HostCallbackID, *selected)
+	}
 	if errQuota != nil {
 		return viewDetailedError(access, http.StatusBadGateway, "quota_failed", errQuota)
 	}

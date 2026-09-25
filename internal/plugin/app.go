@@ -17,6 +17,9 @@ type App struct {
 	callsMu               sync.RWMutex
 	quiesced              bool
 	resetAccounts         sync.Map
+	recentQueriesMu       sync.Mutex
+	recentQueries         map[string]recentAccountQuery
+	now                   func() time.Time
 	resetSyncMu           sync.Mutex
 	resetSyncBlocked      bool
 	resetSyncOwed         bool
@@ -50,6 +53,8 @@ func newApp(store *billing.Store) *App {
 	return &App{
 		store:                 store,
 		newResetSyncTimer:     newResetTimer,
+		recentQueries:         make(map[string]recentAccountQuery),
+		now:                   time.Now,
 		drain:                 make(chan struct{}),
 		admissions:            make(map[string]*requestAdmission),
 		credentials:           make(map[string]credentialView),
