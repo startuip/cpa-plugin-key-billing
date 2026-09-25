@@ -1,6 +1,7 @@
 package plugin
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -889,5 +890,88 @@ func TestConcurrentAPIKeyQuotaQueriesReachUpstreamOnce(t *testing.T) {
 	group.Wait()
 	if queries.Load() != 1 {
 		t.Fatalf("concurrent user queries reached the upstream %d times", queries.Load())
+	}
+}
+
+func TestAPIKeyQuotaResetsAreLimitedAndLeaveNoRefusedRecords(t *testing.T) {
+	app := newTestApp(t)
+	t.Cleanup(app.Shutdown)
+	statePath := t.TempDir() + "/state.db"
+	config := "enabled: true\nallow_api_key_quota_reset: true\nstate_file: " + strconv.Quote(statePath) + "\n"
+	if err := configureApp(app, mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(config)})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.SyncKeys([]string{accountTestKeyA}, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 26, 12, 0, 0, 0, time.UTC)
+	app.now = func() time.Time { return now }
+	file := hostAuthFile{ID: "reset-file", AuthIndex: "codex-1", Name: "user.json", Type: "codex", Source: "file"}
+	var consumes atomic.Int32
+	var succeed atomic.Bool
+	app.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case hostAuthList:
+			return mustJSONRaw(t, hostAuthListResponse{Files: []hostAuthFile{file}}), nil
+		case hostAuthGet:
+			return json.RawMessage(`{"json":{"access_token":"dummy-upstream-token"}}`), nil
+		case hostHTTPDo:
+			if payload.(hostHTTPRequest).Method == http.MethodGet {
+				return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"rate_limit":{}}`)}), nil
+			}
+			consumes.Add(1)
+			if succeed.Load() {
+				return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusNoContent}), nil
+			}
+			return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusConflict, Body: []byte(`{"error":{"message":"No reset credits available"}}`)}), nil
+		}
+		return nil, fmt.Errorf("unexpected host method %q", method)
+	})
+	reset := func(admin bool, id string) ManagementResponse {
+		req := ManagementRequest{Method: http.MethodGet, Path: resourceBase + routeAuthQuotaReset,
+			Headers: http.Header{"Authorization": {"Bearer " + accountTestKeyA}, "X-Quota-Reset-Id": {id}},
+			Query:   url.Values{"auth_index": {file.AuthIndex}, "auth_name": {file.Name}, "auth_revision": {""}}}
+		if admin {
+			req.Method, req.Path = http.MethodPost, managementBase+routeAuthQuotaReset
+			req.Headers.Del("Authorization")
+		}
+		raw, err := app.HandleMethod(MethodManagementHandle, mustMarshal(t, req))
+		if err != nil {
+			t.Fatal(err)
+		}
+		var response ManagementResponse
+		decodeResult(t, raw, &response)
+		return response
+	}
+	id := func(n int) string { return fmt.Sprintf("00112233-4455-4677-8899-%012d", n) }
+	check := func(step string, response ManagementResponse, status int, wantConsumes int32) {
+		t.Helper()
+		if response.StatusCode != status || consumes.Load() != wantConsumes {
+			t.Fatalf("%s: status = %d, consumes = %d, body = %s", step, response.StatusCode, consumes.Load(), response.Body)
+		}
+	}
+	check("refused reset", reset(false, id(1)), http.StatusBadGateway, 1)
+	limited := reset(false, id(2))
+	check("new reset within a minute", limited, http.StatusTooManyRequests, 1)
+	if limited.Headers.Get("Retry-After") != "60" || !strings.Contains(string(limited.Body), "quota_resets_for_this_account_are_limited") {
+		t.Fatalf("limited response = %+v %s", limited.Headers, limited.Body)
+	}
+	for n := 3; n < 50; n++ {
+		check("repeated new resets", reset(false, id(n)), http.StatusTooManyRequests, 1)
+	}
+	now = now.Add(accountQueryInterval)
+	succeed.Store(true)
+	check("reset after the minute", reset(false, id(50)), http.StatusOK, 2)
+	check("retry of a succeeded reset", reset(false, id(50)), http.StatusOK, 2)
+	check("administrator reset", reset(true, id(51)), http.StatusOK, 3)
+	app.Shutdown()
+	database, err := sql.Open("sqlite3", statePath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	var stored int
+	if err := database.QueryRow("SELECT count(*) FROM upstream_resets").Scan(&stored); err != nil || stored != 2 {
+		t.Fatalf("stored reset operations = %d, err = %v", stored, err)
 	}
 }

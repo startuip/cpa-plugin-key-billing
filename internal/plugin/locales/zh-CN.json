@@ -681,6 +681,7 @@
   "backend.the_followed_account_must_be_allowed_by_this_api_key_s_routing_rules": "跟随账号必须在此 API Key 的路由允许范围内",
   "backend.api_key_value_follows_upstream_resets_turn_off_following_before_removing_its_plan": "API Key {v0} 正在跟随上游重置，请先关闭跟随再解除订阅计划",
   "backend.api_key_value_window_value_value_seconds_needs_exactly_one_ordinary_upstream_window_found_value": "API Key {v0}：窗口 {v1}（{v2} 秒）必须匹配唯一的上游普通额度窗口，实际找到 {v3} 个",
+  "backend.quota_resets_for_this_account_are_limited_try_again_in_value_seconds": "该账号每分钟最多重置一次额度，请 {v0} 秒后重试",
   "backend.api_key_value_the_followed_account_must_be_allowed_by_its_routing_rules": "API Key {v0}：跟随账号必须在其路由允许范围内",
   "backend.waiting_for_upstream_reset_times": "等待上游重置时间",
   "backend.the_followed_upstream_account_is_unavailable": "跟随的上游账号不可用",

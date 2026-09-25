@@ -463,3 +463,38 @@ func TestStopFollowingKeepsAtMostOneNativePeriod(t *testing.T) {
 		t.Fatal("the next admission did not start a fresh native cycle")
 	}
 }
+
+func TestUpstreamResetRecordsArePrunedAndAbandoned(t *testing.T) {
+	store, _, now, snapshot := followStore(t)
+	refused, err := store.BeginUpstreamReset(snapshot.AuthIndex, "dummy-refused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.AbandonUpstreamReset(refused)
+	applied, err := store.BeginUpstreamReset(snapshot.AuthIndex, "dummy-applied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.ApplyUpstreamReset(applied)
+	store.AbandonUpstreamReset(applied)
+	store.Read(func(state *State) {
+		if _, kept := state.UpstreamResets[resetOperationKey(snapshot.AuthIndex, "dummy-refused")]; kept {
+			t.Fatal("a refused reset left a record")
+		}
+		if !state.UpstreamResets[resetOperationKey(snapshot.AuthIndex, "dummy-applied")].Applied {
+			t.Fatal("an applied reset was abandoned")
+		}
+	})
+	if !store.UpstreamResetApplied(snapshot.AuthIndex, "dummy-applied") {
+		t.Fatal("applied reset not reported")
+	}
+	*now = now.Add(upstreamResetRetention + time.Minute)
+	if _, err := store.BeginUpstreamReset(snapshot.AuthIndex, "dummy-later"); err != nil {
+		t.Fatal(err)
+	}
+	store.Read(func(state *State) {
+		if _, kept := state.UpstreamResets[resetOperationKey(snapshot.AuthIndex, "dummy-applied")]; kept || len(state.UpstreamResets) != 1 {
+			t.Fatalf("expired records kept: %+v", state.UpstreamResets)
+		}
+	})
+}

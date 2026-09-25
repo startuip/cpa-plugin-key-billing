@@ -67,6 +67,30 @@ func (a *App) rememberAccountQuery(file hostAuthFile, result authQuotaResponse, 
 	a.recentQueries[file.AuthIndex] = recentAccountQuery{at: now, credential: accountQueryCredential(file), result: cloneAuthQuota(result), err: err}
 }
 
+// API key users may start one new reset per account per interval. Retrying a
+// reset that already succeeded answers without contacting the provider.
+func (a *App) resetAttemptWait(authIndex string) time.Duration {
+	a.recentQueriesMu.Lock()
+	defer a.recentQueriesMu.Unlock()
+	last, ok := a.recentResets[authIndex]
+	if wait := accountQueryInterval - a.now().Sub(last); ok && wait > 0 {
+		return wait
+	}
+	return 0
+}
+
+func (a *App) rememberResetAttempt(authIndex string) {
+	a.recentQueriesMu.Lock()
+	defer a.recentQueriesMu.Unlock()
+	now := a.now()
+	for index, last := range a.recentResets {
+		if now.Sub(last) >= accountQueryInterval {
+			delete(a.recentResets, index)
+		}
+	}
+	a.recentResets[authIndex] = now
+}
+
 func (a *App) queryResetAccount(callbackID string, file hostAuthFile) (authQuotaResponse, error) {
 	result, err := a.fetchAuthQuota(callbackID, file, authCategory(file.Type))
 	a.rememberAccountQuery(file, result, err)
