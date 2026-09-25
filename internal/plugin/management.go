@@ -10,6 +10,10 @@ import (
 	"cpa-key-billing/internal/messages"
 )
 
+// The page holds the management key, so its policy admits only the one CDN
+// script it loads, which the page also pins by hash.
+const chartScriptURL = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js"
+
 const (
 	managementBase = "/v0/management/plugins/" + PluginID
 	resourceBase   = "/v0/resource/plugins/" + PluginID
@@ -167,8 +171,8 @@ func (a *App) handleManagement(raw []byte) ([]byte, error) {
 				"Referrer-Policy":        []string{"no-referrer"},
 				"X-Content-Type-Options": []string{"nosniff"},
 				"Content-Security-Policy": []string{
-					"default-src 'none'; script-src 'unsafe-inline' https://cdn.jsdelivr.net; style-src 'unsafe-inline' https://cdn.jsdelivr.net; " +
-						"font-src https://cdn.jsdelivr.net; connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
+					"default-src 'none'; script-src 'unsafe-inline' " + chartScriptURL + "; style-src 'unsafe-inline'; " +
+						"connect-src 'self'; img-src data:; base-uri 'none'; form-action 'none'; frame-ancestors 'self'",
 				},
 			},
 			Body: uiHTML,
