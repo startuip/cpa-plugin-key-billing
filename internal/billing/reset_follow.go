@@ -260,8 +260,8 @@ func refollow(state *State, key *KeyState, plan Plan, now time.Time) error {
 	return nil
 }
 
-// stopFollowing keeps the current counters until the first native boundary
-// after following ends. Later cycles use the plan's own schedule.
+// stopFollowing keeps the current counters for the rest of one native period
+// from each cycle's start. Later cycles use the plan's own schedule.
 func stopFollowing(key *KeyState, plan Plan, now time.Time) {
 	if plan.ID == "" {
 		key.Cycles, key.ResetFollow = nil, nil
@@ -277,11 +277,19 @@ func stopFollowing(key *KeyState, plan Plan, now time.Time) {
 		}
 	}
 	for _, window := range plan.Windows {
-		if cycle, ok := key.Cycles[window.ID]; ok {
-			cycle.EndAt = window.newCycle(plan.ID, now).EndAt
-			cycle.ScheduleOverride = true
-			key.Cycles[window.ID] = cycle
+		cycle, ok := key.Cycles[window.ID]
+		if !ok {
+			continue
 		}
+		// Counters last one native period from the cycle's start, never longer;
+		// a cycle already past that starts afresh at the next admission.
+		end := window.newCycle(plan.ID, cycle.StartAt).EndAt
+		if !end.After(now) {
+			delete(key.Cycles, window.ID)
+			continue
+		}
+		cycle.EndAt, cycle.ScheduleOverride = end, true
+		key.Cycles[window.ID] = cycle
 	}
 	key.ResetFollow = nil
 }
