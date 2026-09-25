@@ -124,7 +124,7 @@ func callHost(method string, payload any) (json.RawMessage, error) {
 	}
 	if !envelope.OK {
 		if envelope.Error != nil {
-			return nil, fmt.Errorf("%s：%s", envelope.Error.Code, envelope.Error.Message)
+			return nil, fmt.Errorf("%s: %s", envelope.Error.Code, envelope.Error.Message)
 		}
 		return nil, fmt.Errorf("Host call %s failed", method)
 	}
