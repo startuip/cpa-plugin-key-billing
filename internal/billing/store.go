@@ -46,18 +46,25 @@ type Store struct {
 }
 
 func NewStore(open func(string) (Repository, error), downloadReferencePrices func(context.Context) ([]byte, error)) *Store {
+	s := &Store{
+		state:          NewState(),
+		cfg:            DefaultConfig(),
+		activeRequests: make(map[string]string),
+		activeByScope:  make(map[string]int),
+		open:           open,
+		now:            time.Now,
+	}
 	if downloadReferencePrices == nil {
-		downloadReferencePrices = downloadModelsDevPrices
+		// Read the proxy per download, so a settings-only reconfiguration applies.
+		downloadReferencePrices = func(ctx context.Context) ([]byte, error) {
+			s.mu.RLock()
+			proxy := s.cfg.ReferencePriceProxy
+			s.mu.RUnlock()
+			return downloadModelsDevPrices(ctx, proxy)
+		}
 	}
-	return &Store{
-		state:                   NewState(),
-		cfg:                     DefaultConfig(),
-		activeRequests:          make(map[string]string),
-		activeByScope:           make(map[string]int),
-		open:                    open,
-		downloadReferencePrices: downloadReferencePrices,
-		now:                     time.Now,
-	}
+	s.downloadReferencePrices = downloadReferencePrices
+	return s
 }
 
 func (s *Store) Now() time.Time {

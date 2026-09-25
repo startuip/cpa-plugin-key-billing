@@ -92,6 +92,7 @@ plugins:
       mask_api_key_view_emails: false # Mask email addresses in API key account views
       pause_reset_follow_sync: false # Pause the 30-minute schedule; set true before disabling the plugin
       allow_api_key_quota_reset: false # Allow API key users to reset accessible Codex auth file quotas using upstream reset credits
+      reference_price_proxy: "" # models.dev download proxy: empty uses HTTPS_PROXY and related environment variables, direct / none connects directly, or an HTTP, HTTPS, SOCKS5, or SOCKS5H URL
       state_file: "plugins/cpa-key-billing-state-v1.db"
 ```
 
