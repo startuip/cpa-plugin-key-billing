@@ -550,3 +550,26 @@ func TestLifecycleDrainStopsForegroundRefreshBetweenAccounts(t *testing.T) {
 		t.Fatalf("draining refresh queried %d accounts", queries.Load())
 	}
 }
+
+func TestDeletedFollowerStopsFollowingAcrossRestart(t *testing.T) {
+	app, path, _, windowID := resetFollowApp(t)
+	if err := app.store.SetResetFollow(billing.CallerScope("sk-dummy-follow-b"), ""); err != nil {
+		t.Fatal(err)
+	}
+	// Key a leaves the CPA configuration while still following.
+	callOK(t, app, http.MethodPost, routeKeysSync, nil, map[string]any{"keys": []string{"sk-dummy-follow-b"}}, http.StatusOK, nil)
+	plans := app.store.Plans()
+	patch := map[string]any{"id": plans[0].ID, "windows": []map[string]any{{"id": windowID, "name": "Daily", "period_seconds": 86400, "request_limit": 3}}}
+	callOK(t, app, http.MethodPatch, routePlans, nil, patch, http.StatusOK, nil)
+	app.Shutdown()
+	restarted := newTestApp(t)
+	t.Cleanup(restarted.Shutdown)
+	if err := configureApp(restarted, mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n", path))})); err != nil {
+		t.Fatalf("edited database no longer loads: %v", err)
+	}
+	for _, key := range restarted.store.KeyViews() {
+		if key.ResetFollow != nil {
+			t.Fatalf("deleted key still follows after an incompatible edit: %+v", key)
+		}
+	}
+}

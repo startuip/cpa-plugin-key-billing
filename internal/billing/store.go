@@ -270,10 +270,11 @@ func editConfiguration[T any](s *Store, fn func(*State) (T, Changes, error)) (T,
 		if err != nil {
 			return err
 		}
-		if err := validateFollowConfiguration(s.state, &next, s.Now()); err != nil {
+		followers, err := validateFollowConfiguration(s.state, &next, s.Now())
+		if err != nil {
 			return err
 		}
-		changes = s.dirty.merge(changes)
+		changes = s.dirty.merge(changes).merge(Changes{Keys: followers})
 		written = s.repo != nil && !changes.empty()
 		if written {
 			errSave = s.repo.Save(&next, changes)
