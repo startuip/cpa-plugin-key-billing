@@ -1,7 +1,9 @@
 package sqlite
 
 import (
+	"context"
 	"database/sql"
+	"errors"
 	"path/filepath"
 	"testing"
 	"time"
@@ -116,4 +118,85 @@ func TestResetFollowPersistenceAndWaitingCycles(t *testing.T) {
 	if loaded.ResetSnapshots["dummy-index"].Error.Text != failure.Text || !loaded.UpstreamResets["dummy-index:dummy-operation"].Applied {
 		t.Fatal("lost synchronization or deduplication state")
 	}
+}
+
+func TestResetSnapshotsPersistOnlyForFollowedAccounts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "state.db")
+	now := time.Now().UTC()
+	open := func() *billing.Store {
+		store := billing.NewStore(func(path string) (billing.Repository, error) { return Open(path) }, func(context.Context) ([]byte, error) {
+			return nil, errors.New("offline")
+		})
+		cfg := billing.DefaultConfig()
+		cfg.StateFile = path
+		if err := store.Configure(cfg); err != nil {
+			t.Fatal(err)
+		}
+		return store
+	}
+	rows := func() []string {
+		database, err := sql.Open("sqlite3", path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer database.Close()
+		result, err := database.Query("SELECT auth_index FROM reset_snapshots ORDER BY auth_index")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer result.Close()
+		var indexes []string
+		for result.Next() {
+			var index string
+			if err := result.Scan(&index); err != nil {
+				t.Fatal(err)
+			}
+			indexes = append(indexes, index)
+		}
+		return indexes
+	}
+	snapshot := func(index string) billing.ResetSnapshot {
+		return billing.ResetSnapshot{AuthIndex: index, Provider: "codex", CredentialRef: billing.CredentialFingerprint(index), AttemptedAt: now, SyncedAt: now,
+			Windows: []billing.UpstreamWindow{{ID: "primary_window", PeriodSeconds: 18000, ResetAt: now.Add(time.Hour)}}}
+	}
+	store := open()
+	if _, err := store.SyncKeys([]string{"sk-dummy-snapshot-key-000001"}, false); err != nil {
+		t.Fatal(err)
+	}
+	scope := billing.CallerScope("sk-dummy-snapshot-key-000001")
+	if _, err := store.CreatePlanWithBindings(billing.Plan{Name: "Follow", Windows: []billing.QuotaWindow{{Name: "5 hours", PeriodSeconds: 18000, RequestLimit: 3}}}, []string{scope}); err != nil {
+		t.Fatal(err)
+	}
+	store.ApplyResetSnapshot(snapshot("dummy-queried"))
+	store.ApplyResetSnapshot(snapshot("dummy-followed"))
+	if got := rows(); len(got) != 0 {
+		t.Fatalf("unfollowed snapshots were saved: %v", got)
+	}
+	if err := store.SetResetFollow(scope, "dummy-followed"); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(); len(got) != 1 || got[0] != "dummy-followed" {
+		t.Fatalf("followed snapshot rows = %v", got)
+	}
+	store.Close()
+	// Earlier versions saved a snapshot for every queried account.
+	database, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := database.Exec(`INSERT INTO reset_snapshots VALUES ('dummy-legacy', '{"auth_index":"dummy-legacy","provider":"kimi"}')`); err != nil {
+		t.Fatal(err)
+	}
+	database.Close()
+	store = open()
+	if got := rows(); len(got) != 1 || got[0] != "dummy-followed" {
+		t.Fatalf("loading kept unfollowed rows: %v", got)
+	}
+	if err := store.SetResetFollow(scope, ""); err != nil {
+		t.Fatal(err)
+	}
+	if got := rows(); len(got) != 0 {
+		t.Fatalf("snapshot kept after following ended: %v", got)
+	}
+	store.Close()
 }

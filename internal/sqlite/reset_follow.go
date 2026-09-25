@@ -9,9 +9,16 @@ import (
 )
 
 // A changed ID is written when its object exists, and deleted otherwise.
+// Snapshots are kept only for accounts a key follows.
 func saveResetFollow(tx *sql.Tx, state *billing.State, changes billing.Changes) error {
 	for _, index := range changes.ResetSnapshots {
-		snapshot := state.ResetSnapshots[index]
+		snapshot, exists := state.ResetSnapshots[index]
+		if !exists || !state.ResetSnapshotFollowed(index) {
+			if _, err := tx.Exec(`DELETE FROM reset_snapshots WHERE auth_index = ?`, index); err != nil {
+				return err
+			}
+			continue
+		}
 		raw, err := json.Marshal(snapshot)
 		if err != nil {
 			return err
@@ -39,9 +46,20 @@ func saveResetFollow(tx *sql.Tx, state *billing.State, changes billing.Changes) 
 	return nil
 }
 
+// Called after keys load. Snapshots of accounts no key follows are dropped,
+// including those that earlier versions saved for every queried account.
 func (d *DB) loadResetFollow(state *billing.State) error {
 	if err := loadResetObjects(d.db, `SELECT auth_index, snapshot_json FROM reset_snapshots`, state.ResetSnapshots); err != nil {
 		return err
+	}
+	for index := range state.ResetSnapshots {
+		if state.ResetSnapshotFollowed(index) {
+			continue
+		}
+		if _, err := d.db.Exec(`DELETE FROM reset_snapshots WHERE auth_index = ?`, index); err != nil {
+			return fmt.Errorf("Remove unfollowed reset snapshot: %w", err)
+		}
+		delete(state.ResetSnapshots, index)
 	}
 	return loadResetObjects(d.db, `SELECT operation_key, operation_json FROM upstream_resets`, state.UpstreamResets)
 }

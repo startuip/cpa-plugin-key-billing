@@ -642,3 +642,42 @@ func TestResetFollowRefreshListsAuthFilesOnce(t *testing.T) {
 		t.Fatalf("auth file lists = %d, upstream queries = %d", lists.Load(), queries.Load())
 	}
 }
+
+func TestAPIKeyRefreshOfUnavailableFollowedAccountIsLimited(t *testing.T) {
+	app, _, _, _ := resetFollowApp(t)
+	now := time.Now()
+	app.now = func() time.Time { return now }
+	var lists atomic.Int32
+	app.SetHostCaller(func(method string, _ any) (json.RawMessage, error) {
+		if method == hostAuthList {
+			lists.Add(1)
+			return json.Marshal(hostAuthListResponse{Files: []hostAuthFile{}})
+		}
+		return nil, fmt.Errorf("unexpected host method %q", method)
+	})
+	refresh := func() {
+		response := followManagementCall(t, app, ManagementRequest{Method: http.MethodGet, Path: resourceBase + routeSubscription,
+			Headers: http.Header{"Authorization": {"Bearer sk-dummy-follow-a"}}, Query: map[string][]string{"refresh_reset_follow": {"1"}}})
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("refresh: %s", response.Body)
+		}
+	}
+	refresh()
+	view, _ := app.store.KeyViewForScope(billing.CallerScope("sk-dummy-follow-a"))
+	attempted := view.ResetFollow.AttemptedAt
+	if lists.Load() != 1 || view.ResetFollow.Error.Text == "" {
+		t.Fatalf("first refresh: lists = %d, follow = %+v", lists.Load(), view.ResetFollow)
+	}
+	for range 5 {
+		refresh()
+	}
+	view, _ = app.store.KeyViewForScope(billing.CallerScope("sk-dummy-follow-a"))
+	if lists.Load() != 1 || !view.ResetFollow.AttemptedAt.Equal(attempted) {
+		t.Fatalf("repeated refreshes were not limited: lists = %d", lists.Load())
+	}
+	now = now.Add(accountQueryInterval)
+	refresh()
+	if lists.Load() != 2 {
+		t.Fatal("refresh after the minute did not check the account again")
+	}
+}

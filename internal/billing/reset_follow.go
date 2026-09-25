@@ -113,6 +113,13 @@ func (s *Store) SetResetFollow(scope, authIndex string) error {
 		}
 		plan, _ := state.FindPlan(key.PlanID)
 		now := s.Now()
+		changes := Changes{Keys: []string{scope}}
+		if key.ResetFollow != nil {
+			changes.ResetSnapshots = append(changes.ResetSnapshots, key.ResetFollow.AuthIndex)
+		}
+		if authIndex != "" {
+			changes.ResetSnapshots = append(changes.ResetSnapshots, authIndex)
+		}
 		settleExpiredCycles(key, now)
 		if authIndex == "" {
 			if key.ResetFollow != nil {
@@ -142,7 +149,7 @@ func (s *Store) SetResetFollow(scope, authIndex string) error {
 				key.Cycles[id] = cycle
 			}
 		}
-		return struct{}{}, Changes{Keys: []string{scope}}, nil
+		return struct{}{}, changes, nil
 	})
 	return err
 }
@@ -382,8 +389,28 @@ func (s *Store) ApplyResetSnapshot(snapshot ResetSnapshot) {
 			}
 			scopes = append(scopes, scope)
 		}
-		return struct{}{}, Changes{Keys: scopes, ResetSnapshots: []string{snapshot.AuthIndex}}
+		return struct{}{}, followerChanges(scopes, snapshot.AuthIndex)
 	})
+}
+
+// A snapshot is saved only while a key follows its account; other accounts'
+// snapshots stay in memory until a key starts following them.
+func followerChanges(scopes []string, authIndex string) Changes {
+	if len(scopes) == 0 {
+		return Changes{}
+	}
+	return Changes{Keys: scopes, ResetSnapshots: []string{authIndex}}
+}
+
+// ResetSnapshotFollowed reports whether any key, deleted or not, follows the
+// account, and so whether its snapshot is persisted.
+func (s *State) ResetSnapshotFollowed(authIndex string) bool {
+	for _, key := range s.Keys {
+		if key != nil && key.ResetFollow != nil && key.ResetFollow.AuthIndex == authIndex {
+			return true
+		}
+	}
+	return false
 }
 
 func resetOperationKey(authIndex, id string) string { return authIndex + ":" + id }
@@ -462,7 +489,9 @@ func (s *Store) ApplyUpstreamReset(operation UpstreamReset) {
 			key.ResetFollow.Error = snapshot.Error
 			scopes = append(scopes, scope)
 		}
-		return struct{}{}, Changes{Keys: scopes, ResetSnapshots: []string{operation.AuthIndex}, UpstreamResets: []string{operationKey}}
+		changes := followerChanges(scopes, operation.AuthIndex)
+		changes.UpstreamResets = []string{operationKey}
+		return struct{}{}, changes
 	})
 }
 
