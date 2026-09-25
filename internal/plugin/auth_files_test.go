@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -777,4 +779,115 @@ func mustJSONRaw(t *testing.T, value any) json.RawMessage {
 		t.Fatal(errMarshal)
 	}
 	return raw
+}
+
+func TestAPIKeyQuotaQueriesShareRecentResult(t *testing.T) {
+	app := newTestApp(t)
+	t.Cleanup(app.Shutdown)
+	config := string(testConfigYAML(t, true)) + "mask_api_key_view_emails: true\n"
+	if err := configureApp(app, mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(config)})); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := app.store.SyncKeys([]string{accountTestKeyA}, false); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
+	app.now = func() time.Time { return now }
+	modTime := now
+	var queries atomic.Int32
+	var failing atomic.Bool
+	app.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case hostAuthList:
+			return json.Marshal(hostAuthListResponse{Files: []hostAuthFile{{ID: "codex-file", AuthIndex: "codex-1", Name: "codex.json", Type: "codex", ModTime: modTime}}})
+		case hostAuthGet:
+			return json.RawMessage(`{"json":{"access_token":"dummy-upstream-token"}}`), nil
+		case hostHTTPDo:
+			if !strings.HasSuffix(payload.(hostHTTPRequest).URL, "/usage") {
+				return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"credits":[]}`)}), nil
+			}
+			queries.Add(1)
+			if failing.Load() {
+				return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusServiceUnavailable}), nil
+			}
+			return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"additional_rate_limits":[{"limit_name":"team@example.com",` +
+				`"rate_limit":{"primary_window":{"used_percent":10,"limit_window_seconds":18000,"reset_after_seconds":60}}}]}`)}), nil
+		}
+		t.Fatalf("unexpected host method %q", method)
+		return nil, nil
+	})
+	query := url.Values{"auth_index": {"codex-1"}}
+	user := func() ManagementResponse { return callAccount(t, app, routeAuthQuota, accountTestKeyA, query) }
+	first := user()
+	if first.StatusCode != http.StatusOK || queries.Load() != 1 || strings.Contains(string(first.Body), "team@example.com") {
+		t.Fatalf("first user query: status = %d, queries = %d, body = %s", first.StatusCode, queries.Load(), first.Body)
+	}
+	if second := user(); second.StatusCode != http.StatusOK || queries.Load() != 1 || string(second.Body) != string(first.Body) {
+		t.Fatalf("repeated user query reached the upstream: queries = %d", queries.Load())
+	}
+	app.recentQueriesMu.Lock()
+	shared := app.recentQueries["codex-1"].result.Quota[0].Label
+	app.recentQueriesMu.Unlock()
+	if !strings.Contains(shared, "team@example.com") {
+		t.Fatalf("masking a user response changed the shared result: %q", shared)
+	}
+	if admin := callManagement(t, app, http.MethodGet, routeAuthQuota, query, nil); admin.StatusCode != http.StatusOK || queries.Load() != 2 ||
+		!strings.Contains(string(admin.Body), "team@example.com") {
+		t.Fatalf("administrator query: status = %d, queries = %d", admin.StatusCode, queries.Load())
+	}
+	if user(); queries.Load() != 2 {
+		t.Fatal("user query ignored the administrator's recent result")
+	}
+	now = now.Add(accountQueryInterval)
+	if user(); queries.Load() != 3 {
+		t.Fatal("an expired result was reused")
+	}
+	modTime = modTime.Add(time.Second)
+	if user(); queries.Load() != 4 {
+		t.Fatal("a replaced credential reused the previous result")
+	}
+	now = now.Add(accountQueryInterval)
+	failing.Store(true)
+	for range 2 {
+		if response := user(); response.StatusCode != http.StatusBadGateway || queries.Load() != 5 {
+			t.Fatalf("failure: status = %d, queries = %d", response.StatusCode, queries.Load())
+		}
+	}
+}
+
+func TestConcurrentAPIKeyQuotaQueriesReachUpstreamOnce(t *testing.T) {
+	app := newConfiguredApp(t)
+	if _, err := app.store.SyncKeys([]string{accountTestKeyA}, false); err != nil {
+		t.Fatal(err)
+	}
+	var queries atomic.Int32
+	app.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		switch method {
+		case hostAuthList:
+			return json.RawMessage(`{"files":[{"id":"codex-file","auth_index":"codex-1","name":"codex.json","type":"codex"}]}`), nil
+		case hostAuthGet:
+			return json.RawMessage(`{"json":{"access_token":"dummy-upstream-token"}}`), nil
+		case hostHTTPDo:
+			if strings.HasSuffix(payload.(hostHTTPRequest).URL, "/usage") {
+				queries.Add(1)
+				time.Sleep(20 * time.Millisecond)
+			}
+			return mustJSONRaw(t, hostHTTPResponse{StatusCode: http.StatusOK, Body: []byte(`{"rate_limit":{}}`)}), nil
+		}
+		return nil, fmt.Errorf("unexpected host method %q", method)
+	})
+	var group sync.WaitGroup
+	for range 8 {
+		group.Add(1)
+		go func() {
+			defer group.Done()
+			if response := callAccount(t, app, routeAuthQuota, accountTestKeyA, url.Values{"auth_index": {"codex-1"}}); response.StatusCode != http.StatusOK {
+				t.Errorf("status = %d", response.StatusCode)
+			}
+		}()
+	}
+	group.Wait()
+	if queries.Load() != 1 {
+		t.Fatalf("concurrent user queries reached the upstream %d times", queries.Load())
+	}
 }
