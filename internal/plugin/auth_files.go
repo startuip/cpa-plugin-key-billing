@@ -205,6 +205,12 @@ func (a *App) resolveQuotaAuthFile(req ManagementRequest, access viewAccess) (*h
 		return nil, viewJSONError(access, http.StatusBadRequest, "invalid", "Invalid auth file identifier")
 	}
 	files, errList := a.listHostAuthFiles()
+	return a.selectQuotaAuthFile(files, errList, authIndex, access)
+}
+
+// selectQuotaAuthFile applies the same checks to an auth file list that a
+// caller resolving several accounts has already read once.
+func (a *App) selectQuotaAuthFile(files []hostAuthFile, errList error, authIndex string, access viewAccess) (*hostAuthFile, ManagementResponse) {
 	if errList != nil {
 		return nil, viewDetailedError(access, http.StatusBadGateway, "host_unavailable", errList)
 	}
