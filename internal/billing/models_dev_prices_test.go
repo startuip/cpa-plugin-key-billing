@@ -10,8 +10,6 @@ import (
 	"testing"
 )
 
-const unpricedModel = "cpa-key-billing-test-unpriced-model"
-
 func TestReferencePricesCarriesSingleLongContextTier(t *testing.T) {
 	rule, known := MatchReferencePrice("gpt-5.6-sol", fixtureReferencePrices(t))
 	if !known || rule.LongContext == nil || rule.LongContext.ThresholdInputTokens != 272000 ||
