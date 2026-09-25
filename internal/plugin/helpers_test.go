@@ -141,3 +141,9 @@ func newTestApp(t *testing.T) *App {
 	}
 	return newApp(billing.NewStore(openRepository, func(context.Context) ([]byte, error) { return raw, nil }))
 }
+
+// configureApp applies a configuration through the host's reconfiguration call.
+func configureApp(app *App, raw []byte) error {
+	_, err := app.HandleMethod(MethodPluginReconfigure, raw)
+	return err
+}

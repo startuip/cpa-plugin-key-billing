@@ -80,6 +80,11 @@ func (c *resetTestClock) checkStopped(t *testing.T) {
 		}
 	}
 }
+func currentResetWorker(app *App) *resetSyncWorker {
+	app.resetSyncMu.Lock()
+	defer app.resetSyncMu.Unlock()
+	return app.resetSync
+}
 func startResetTestWorker(app *App, immediate bool) {
 	app.callsMu.RLock()
 	defer app.callsMu.RUnlock()
@@ -156,7 +161,7 @@ func TestResetSyncIdleScheduleDeduplicatesAndPreservesUsage(t *testing.T) {
 	clock.checkStopped(t)
 }
 
-func TestResetSyncLifecycleDrainsSlowRound(t *testing.T) {
+func TestResetSyncLifecycleWithSlowRound(t *testing.T) {
 	for _, operation := range []string{"pause", "disable", "quiesce", "shutdown", "switch storage"} {
 		t.Run(operation, func(t *testing.T) {
 			app, path, file, _ := resetFollowApp(t)
@@ -175,7 +180,7 @@ func TestResetSyncLifecycleDrainsSlowRound(t *testing.T) {
 			}))
 			startResetTestWorker(app, false)
 			waitFollowSignal(t, clock.updates)
-			worker := app.resetSync
+			worker := currentResetWorker(app)
 			clock.Advance(30 * time.Minute)
 			waitFollowSignal(t, entered)
 			// No timer is armed during a round, even if several intervals pass.
@@ -218,10 +223,15 @@ func TestResetSyncLifecycleDrainsSlowRound(t *testing.T) {
 					}
 				}
 			}()
-			select {
-			case <-finished:
-				t.Fatal("lifecycle abandoned an issued host callback")
-			case <-time.After(25 * time.Millisecond):
+			if operation == "pause" || operation == "disable" {
+				// Settings on the open database apply without joining the issued query.
+				waitFollowSignal(t, finished)
+			} else {
+				select {
+				case <-finished:
+					t.Fatal("lifecycle abandoned an issued host callback")
+				case <-time.After(25 * time.Millisecond):
+				}
 			}
 			once.Do(func() { close(release) })
 			waitFollowSignal(t, finished)
@@ -327,7 +337,7 @@ func TestResetSyncFirstEnableStartsOneTimerWithoutDuplicateQuery(t *testing.T) {
 		return resetQuotaResponse(), nil
 	}))
 	startResetTestWorker(app, true)
-	if app.resetSync != nil {
+	if currentResetWorker(app) != nil {
 		t.Fatal("started worker without followers")
 	}
 	for _, key := range []string{"sk-dummy-follow-a", "sk-dummy-follow-b"} {
@@ -353,7 +363,7 @@ func TestResetSyncFirstEnableStartsOneTimerWithoutDuplicateQuery(t *testing.T) {
 	}
 }
 
-func TestResetSyncFailedReconfigurationRestartsPreviousConfiguration(t *testing.T) {
+func TestResetSyncRejectedConfigurationKeepsSchedule(t *testing.T) {
 	app, _, file, _ := resetFollowApp(t)
 	clock := newResetTestClock()
 	app.newResetSyncTimer = clock.NewTimer
@@ -366,14 +376,22 @@ func TestResetSyncFailedReconfigurationRestartsPreviousConfiguration(t *testing.
 	}))
 	startResetTestWorker(app, false)
 	waitFollowSignal(t, clock.updates)
-	previous := app.resetSync
+	previous := currentResetWorker(app)
 	if _, err := app.HandleMethod(MethodPluginReconfigure, mustMarshal(t, LifecycleRequest{ConfigYAML: []byte("enabled: invalid-boolean")})); err == nil {
 		t.Fatal("invalid configuration accepted")
+	}
+	if currentResetWorker(app) != previous || resetSyncStopped(previous.stop) || queries.Load() != 0 {
+		t.Fatal("rejected configuration disturbed the running schedule")
+	}
+	// A database that cannot be opened keeps the previous one and restarts it.
+	unusable := mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n", t.TempDir()))})
+	if _, err := app.HandleMethod(MethodPluginReconfigure, unusable); err == nil {
+		t.Fatal("unusable database accepted")
 	}
 	waitFollowSignal(t, previous.done)
 	waitFollowSignal(t, clock.updates)
 	if queries.Load() != 1 {
-		t.Fatal("previous schedule was lost after rejected configuration")
+		t.Fatal("previous schedule was not restarted after a failed storage switch")
 	}
 	clock.Advance(30 * time.Minute)
 	waitFollowSignal(t, clock.updates)
@@ -411,7 +429,7 @@ func TestResetSyncStopSkipsRemainingAccounts(t *testing.T) {
 	})
 	startResetTestWorker(app, true)
 	waitFollowSignal(t, entered)
-	worker := app.resetSync
+	worker := currentResetWorker(app)
 	stopped := make(chan struct{})
 	go func() { app.Shutdown(); close(stopped) }()
 	waitFollowSignal(t, worker.stop)
@@ -419,5 +437,110 @@ func TestResetSyncStopSkipsRemainingAccounts(t *testing.T) {
 	waitFollowSignal(t, stopped)
 	if queries.Load() != 1 {
 		t.Fatal("shutdown started another account after joining the issued query")
+	}
+}
+
+func TestResetSyncResumeWhileQueryHangsKeepsOneWorker(t *testing.T) {
+	app, path, file, _ := resetFollowApp(t)
+	clock := newResetTestClock()
+	app.newResetSyncTimer = clock.NewTimer
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var queries, active, maxActive atomic.Int32
+	app.SetHostCaller(resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") {
+			if n := active.Add(1); n > maxActive.Load() {
+				maxActive.Store(n)
+			}
+			defer active.Add(-1)
+			if queries.Add(1) == 1 {
+				close(entered)
+				<-release
+			}
+		}
+		return resetQuotaResponse(), nil
+	}))
+	startResetTestWorker(app, true)
+	waitFollowSignal(t, entered)
+	worker := currentResetWorker(app)
+	// The upstream never answers the issued query; settings still apply at once.
+	for _, extra := range []string{"pause_reset_follow_sync: true\n", ""} {
+		applied := make(chan struct{})
+		config := mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n%s", path, extra))})
+		go func() {
+			defer close(applied)
+			if err := configureApp(app, config); err != nil {
+				t.Error(err)
+			}
+		}()
+		waitFollowSignal(t, applied)
+	}
+	if currentResetWorker(app) != worker {
+		t.Fatal("resuming replaced the busy worker")
+	}
+	once.Do(func() { close(release) })
+	// The same worker runs the resumed round after its query, then arms its timer.
+	waitFollowSignal(t, clock.updates)
+	clock.mu.Lock()
+	timers := len(clock.timers)
+	clock.mu.Unlock()
+	if queries.Load() != 2 || maxActive.Load() != 1 || timers != 1 {
+		t.Fatalf("queries = %d, concurrent = %d, schedulers = %d", queries.Load(), maxActive.Load(), timers)
+	}
+}
+
+func TestResetSyncStartupWaitsForHostAuthInventory(t *testing.T) {
+	app, path, file, _ := resetFollowApp(t)
+	app.Shutdown()
+	restarted := newTestApp(t)
+	t.Cleanup(restarted.Shutdown)
+	clock := newResetTestClock()
+	restarted.newResetSyncTimer = clock.NewTimer
+	var loaded atomic.Bool
+	var queries atomic.Int32
+	caller := resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") {
+			queries.Add(1)
+		}
+		return resetQuotaResponse(), nil
+	})
+	restarted.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		if method == hostAuthList && !loaded.Load() {
+			// Before CPA attaches its auth manager it lists files from disk, without indexes.
+			return json.Marshal(hostAuthListResponse{Files: []hostAuthFile{{Name: file.Name, Type: file.Type, Source: "file"}}})
+		}
+		return caller(method, payload)
+	})
+	config := mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n", path))})
+	if _, err := restarted.HandleMethod(MethodPluginRegister, config); err != nil {
+		t.Fatal(err)
+	}
+	waitFollowSignal(t, clock.updates)
+	// CPA reconfigures again before it loads auth files.
+	if err := configureApp(restarted, config); err != nil {
+		t.Fatal(err)
+	}
+	waitFollowSignal(t, clock.updates)
+	view, _ := restarted.store.KeyViewForScope(billing.CallerScope("sk-dummy-follow-a"))
+	if queries.Load() != 0 || view.ResetFollow.Error.Text != "" {
+		t.Fatalf("startup reported followers before the host loaded them: queries = %d, error = %q", queries.Load(), view.ResetFollow.Error.Text)
+	}
+	// The reconfiguration after loading runs the owed synchronization once.
+	loaded.Store(true)
+	if err := configureApp(restarted, config); err != nil {
+		t.Fatal(err)
+	}
+	waitFollowSignal(t, clock.updates)
+	view, _ = restarted.store.KeyViewForScope(billing.CallerScope("sk-dummy-follow-a"))
+	if queries.Load() != 1 || view.ResetFollow.Error.Text != "" || view.ResetFollow.SyncedAt.IsZero() {
+		t.Fatalf("owed synchronization: queries = %d, follow = %+v", queries.Load(), view.ResetFollow)
+	}
+	if err := configureApp(restarted, config); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(50 * time.Millisecond)
+	if queries.Load() != 1 {
+		t.Fatal("a later configuration save queried again")
 	}
 }

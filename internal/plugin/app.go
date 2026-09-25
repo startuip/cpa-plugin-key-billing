@@ -19,7 +19,9 @@ type App struct {
 	resetAccounts         sync.Map
 	resetSyncMu           sync.Mutex
 	resetSyncBlocked      bool
+	resetSyncOwed         bool
 	resetSync             *resetSyncWorker
+	drain                 chan struct{}
 	newResetSyncTimer     func(time.Duration) resetSyncTimer
 	store                 *billing.Store
 	hostCaller            HostCaller
@@ -48,6 +50,7 @@ func newApp(store *billing.Store) *App {
 	return &App{
 		store:                 store,
 		newResetSyncTimer:     newResetTimer,
+		drain:                 make(chan struct{}),
 		admissions:            make(map[string]*requestAdmission),
 		credentials:           make(map[string]credentialView),
 		credentialsByRawID:    make(map[string]string),
@@ -73,26 +76,14 @@ func (a *App) HandleMethod(method string, request []byte) (response []byte, err 
 			}
 		}
 	}()
-	if method == MethodPluginRegister || method == MethodPluginReconfigure || method == MethodPluginQuiesce {
+	switch method {
+	case MethodPluginRegister, MethodPluginReconfigure:
+		return a.reconfigure(request)
+	case MethodPluginQuiesce:
 		a.lifecycleMu.Lock()
 		defer a.lifecycleMu.Unlock()
-		// Stop before taking the writer lock: the worker may be entering a
-		// round under callsMu. Joining it while holding that lock deadlocks.
-		a.stopResetSync()
-		a.callsMu.Lock()
-		defer a.callsMu.Unlock()
-		if method == MethodPluginQuiesce {
-			a.quiesced = true
-			return OKEnvelope(struct{}{})
-		}
-		response, err = a.handleMethod(method, request)
-		if err == nil {
-			a.quiesced = false
-		}
-		if !a.quiesced {
-			a.resumeResetSync()
-		}
-		return response, err
+		a.exclusive(func() { a.quiesced = true })
+		return OKEnvelope(struct{}{})
 	}
 	a.callsMu.RLock()
 	defer a.callsMu.RUnlock()
@@ -104,12 +95,6 @@ func (a *App) HandleMethod(method string, request []byte) (response []byte, err 
 
 func (a *App) handleMethod(method string, request []byte) ([]byte, error) {
 	switch method {
-	case MethodPluginRegister, MethodPluginReconfigure:
-		if errConfigure := a.configure(request); errConfigure != nil {
-			a.store.AddPluginLog(billing.PluginLogError, "Failed to apply plugin configuration: %v", errConfigure)
-			return nil, errConfigure
-		}
-		return OKEnvelope(registration())
 	case MethodRequestInterceptBefore:
 		return a.interceptBeforeAuth(request)
 	case MethodRequestInterceptAfter:
@@ -135,40 +120,101 @@ func (a *App) Shutdown() {
 	}
 	a.lifecycleMu.Lock()
 	defer a.lifecycleMu.Unlock()
+	a.exclusive(func() {
+		a.quiesced = true
+		a.store.Close()
+	})
+}
+
+// exclusive runs fn with no plugin call or reset-follow round in flight. It
+// waits for issued host calls rather than abandoning them, so it is reserved for
+// switching or closing storage. Callers hold lifecycleMu.
+func (a *App) exclusive(fn func()) {
+	a.beginDrain()
+	// Stop before taking the writer lock: the worker may be entering a
+	// round under callsMu. Joining it while holding that lock deadlocks.
 	a.stopResetSync()
 	a.callsMu.Lock()
 	defer a.callsMu.Unlock()
-	a.quiesced = true
-	a.store.Close()
+	defer a.endDrain()
+	fn()
 }
 
-func (a *App) configure(raw []byte) error {
+// A reconfiguration that keeps the open database only replaces settings: it
+// neither waits for in-flight calls nor joins the reset-follow worker, which
+// re-reads the settings before its next account. Opening another database, and
+// resuming after quiesce, drain both first.
+func (a *App) reconfigure(raw []byte) ([]byte, error) {
+	a.lifecycleMu.Lock()
+	defer a.lifecycleMu.Unlock()
+	cfg, err := decodeLifecycleConfig(raw)
+	if err == nil {
+		// Only lifecycle calls, which hold lifecycleMu, write quiesced.
+		if !a.quiesced && a.store.UsesStorage(cfg) {
+			err = a.reconfigureInPlace(cfg)
+		} else {
+			err = a.reconfigureStorage(cfg)
+		}
+	}
+	if err != nil {
+		a.store.AddPluginLog(billing.PluginLogError, "Failed to apply plugin configuration: %v", err)
+		return nil, err
+	}
+	a.callsMu.RLock()
+	defer a.callsMu.RUnlock()
+	// Refresh records its result; a download failure does not disable custom
+	// prices. It runs without the writer lock, so requests keep flowing.
+	_, _ = a.store.EnsureReferencePrices()
+	return OKEnvelope(registration())
+}
+
+func (a *App) reconfigureInPlace(cfg billing.Config) error {
+	a.callsMu.RLock()
+	defer a.callsMu.RUnlock()
+	wasSyncing := a.resetSyncEnabled()
+	if err := a.applyConfig(cfg); err != nil {
+		return err
+	}
+	// Resuming automatic synchronization queries at once, as does the round owed
+	// since storage opened; any other change keeps the running schedule.
+	a.startResetSync(!wasSyncing && a.resetSyncEnabled() || a.resetSyncStillOwed())
+	return nil
+}
+
+func (a *App) reconfigureStorage(cfg billing.Config) (err error) {
+	a.exclusive(func() {
+		if err = a.applyConfig(cfg); err == nil {
+			a.quiesced = false
+		}
+	})
+	if !a.quiesced {
+		a.callsMu.RLock()
+		defer a.callsMu.RUnlock()
+		a.resumeResetSync()
+	}
+	return err
+}
+
+func decodeLifecycleConfig(raw []byte) (billing.Config, error) {
 	var req LifecycleRequest
 	if len(raw) > 0 {
 		if errUnmarshal := json.Unmarshal(raw, &req); errUnmarshal != nil {
-			return fmt.Errorf("Parse plugin lifecycle request: %w", errUnmarshal)
+			return billing.Config{}, fmt.Errorf("Parse plugin lifecycle request: %w", errUnmarshal)
 		}
 	}
-	cfg, errDecode := billing.DecodeConfig(req.ConfigYAML)
-	if errDecode != nil {
-		return errDecode
+	return billing.DecodeConfig(req.ConfigYAML)
+}
+
+func (a *App) applyConfig(cfg billing.Config) error {
+	a.routingMu.Lock()
+	defer a.routingMu.Unlock()
+	previous := a.store.ConfigCredentials()
+	if err := a.store.Configure(cfg); err != nil {
+		return err
 	}
-	if errConfigure := func() error {
-		a.routingMu.Lock()
-		defer a.routingMu.Unlock()
-		previous := a.store.ConfigCredentials()
-		if err := a.store.Configure(cfg); err != nil {
-			return err
-		}
-		if loaded := a.store.ConfigCredentials(); !maps.Equal(previous, loaded) {
-			a.replaceSyncedCredentials(previous, loaded)
-		}
-		return nil
-	}(); errConfigure != nil {
-		return errConfigure
+	if loaded := a.store.ConfigCredentials(); !maps.Equal(previous, loaded) {
+		a.replaceSyncedCredentials(previous, loaded)
 	}
-	// Refresh records its result; a download failure does not disable custom prices.
-	_, _ = a.store.EnsureReferencePrices()
 	return nil
 }
 

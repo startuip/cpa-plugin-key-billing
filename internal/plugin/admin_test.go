@@ -576,7 +576,7 @@ func TestConfigCredentialSyncSurvivesRestartAndRollsBack(t *testing.T) {
 		app.Shutdown()
 		app = newTestApp(t)
 		t.Cleanup(app.Shutdown)
-		if err := app.configure(configuration); err != nil {
+		if err := configureApp(app, configuration); err != nil {
 			t.Fatal(err)
 		}
 		app.SetHostCaller(func(method string, _ any) (json.RawMessage, error) {
@@ -602,7 +602,7 @@ func TestConfigCredentialSyncSurvivesRestartAndRollsBack(t *testing.T) {
 	}
 	app.observeCandidates([]SchedulerAuthCandidate{{ID: "dummy-config", Provider: "codex", Status: "cooldown", Attributes: map[string]string{"source_backend": "config"}}})
 	before := app.credentialInventory()
-	if err := app.configure(configuration); err != nil {
+	if err := configureApp(app, configuration); err != nil {
 		t.Fatal(err)
 	}
 	if !reflect.DeepEqual(app.credentialInventory(), before) {
@@ -643,13 +643,13 @@ func TestConfigCredentialSyncSurvivesRestartAndRollsBack(t *testing.T) {
 		inventory[0].DisplayName != "sk-new…5678" || !inventory[0].Disabled || inventory[0].Status != "disabled" {
 		t.Fatalf("replacement after restart = %+v", inventory)
 	}
-	if err := app.configure(mustMarshal(t, LifecycleRequest{ConfigYAML: testConfigYAML(t, true)})); err != nil {
+	if err := configureApp(app, mustMarshal(t, LifecycleRequest{ConfigYAML: testConfigYAML(t, true)})); err != nil {
 		t.Fatal(err)
 	}
 	if len(app.credentialInventory()) != 0 || len(app.store.ConfigCredentials()) != 0 {
 		t.Fatal("old config credentials survived a database switch")
 	}
-	if err := app.configure(configuration); err != nil {
+	if err := configureApp(app, configuration); err != nil {
 		t.Fatal(err)
 	}
 	if inventory := app.credentialInventory(); len(inventory) != 1 || inventory[0].Ref != ref || !inventory[0].Disabled {

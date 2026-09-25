@@ -113,8 +113,8 @@ func TestResetFollowExplicitRefreshDeduplicatesAndPreservesUsage(t *testing.T) {
 	}
 }
 
-func TestResetFollowLifecycleWaitsForForegroundRefresh(t *testing.T) {
-	for _, lifecycle := range []string{MethodPluginQuiesce, MethodPluginReconfigure, "shutdown"} {
+func TestResetFollowLifecycleAndForegroundRefresh(t *testing.T) {
+	for _, lifecycle := range []string{MethodPluginQuiesce, "switch storage", "shutdown", "disable"} {
 		t.Run(lifecycle, func(t *testing.T) {
 			app, path, file, _ := resetFollowApp(t)
 			entered, release := make(chan struct{}), make(chan struct{})
@@ -134,24 +134,39 @@ func TestResetFollowLifecycleWaitsForForegroundRefresh(t *testing.T) {
 			waitFollowSignal(t, entered)
 			finished := make(chan struct{})
 			config := mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: false\nstate_file: %q\n", path))})
+			if lifecycle == "switch storage" {
+				config = mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\nstate_file: %q\n", t.TempDir()+"/other.db"))})
+			}
 			go func() {
 				defer close(finished)
-				if lifecycle == "shutdown" {
+				var err error
+				switch lifecycle {
+				case "shutdown":
 					app.Shutdown()
-				} else if _, err := app.HandleMethod(lifecycle, config); err != nil {
+				case MethodPluginQuiesce:
+					_, err = app.HandleMethod(MethodPluginQuiesce, nil)
+				default:
+					_, err = app.HandleMethod(MethodPluginReconfigure, config)
+				}
+				if err != nil {
 					t.Error(err)
 				}
 			}()
-			select {
-			case <-finished:
-				close(release)
-				t.Fatal("lifecycle returned before the in-flight host call")
-			case <-time.After(25 * time.Millisecond):
+			if lifecycle == "disable" {
+				// Settings on the open database change without waiting for the query.
+				waitFollowSignal(t, finished)
+			} else {
+				select {
+				case <-finished:
+					close(release)
+					t.Fatal("lifecycle returned before the in-flight host call")
+				case <-time.After(25 * time.Millisecond):
+				}
 			}
 			close(release)
 			waitFollowSignal(t, refreshed)
 			waitFollowSignal(t, finished)
-			// Disabled, quiesced, and closed instances do not issue new queries.
+			// Disabled, quiesced, switched, and closed instances do not query this account.
 			_, _ = app.HandleMethod(MethodManagementHandle, request)
 			if queries.Load() != 1 {
 				t.Fatal("stopped instance contacted upstream")
@@ -427,5 +442,111 @@ func TestResetFollowPageRefreshFailureKeepsQuotaVisible(t *testing.T) {
 	view, _ := app.store.KeyViewForScope(scope)
 	if view.Windows[0].Dimensions[0].Used.String() != "1" || view.ResetFollow.Windows[view.Windows[0].ID].NextResetAt.IsZero() {
 		t.Fatal("failed refresh discarded usage or the confirmed boundary")
+	}
+}
+
+func TestSameStorageReconfigurationDoesNotWaitForForegroundQueries(t *testing.T) {
+	app, path, file, _ := resetFollowApp(t)
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	app.SetHostCaller(resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") {
+			close(entered)
+			<-release
+		}
+		return resetQuotaResponse(), nil
+	}))
+	request := mustMarshal(t, ManagementRequest{Method: http.MethodGet, Path: managementBase + routeKeys,
+		Query: map[string][]string{"refresh_reset_follow": {"1"}}, HostCallbackID: "foreground"})
+	refreshed := make(chan struct{})
+	go func() { defer close(refreshed); _, _ = app.HandleMethod(MethodManagementHandle, request) }()
+	waitFollowSignal(t, entered)
+	// Saving any CPA setting reconfigures every plugin with the same database.
+	configured := make(chan struct{})
+	go func() {
+		defer close(configured)
+		config := mustMarshal(t, LifecycleRequest{ConfigYAML: []byte(fmt.Sprintf("enabled: true\ndebug: true\nstate_file: %q\n", path))})
+		if err := configureApp(app, config); err != nil {
+			t.Error(err)
+		}
+	}()
+	waitFollowSignal(t, configured)
+	admitted := make(chan error, 1)
+	go func() {
+		raw, err := app.HandleMethod(MethodRequestInterceptBefore, mustMarshal(t, RequestInterceptRequest{
+			RequestID: "dummy-request", SourceFormat: "openai", Model: "gpt-5.5", RequestedModel: "gpt-5.5",
+			Metadata: map[string]any{MetadataCallerScope: billing.CallerScope("sk-dummy-follow-a")},
+		}))
+		var envelope Envelope
+		if err == nil {
+			err = json.Unmarshal(raw, &envelope)
+		}
+		if err == nil && !envelope.OK {
+			err = fmt.Errorf("admission failed: %s", raw)
+		}
+		admitted <- err
+	}()
+	select {
+	case err := <-admitted:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("admission waited for an upstream quota query")
+	}
+	once.Do(func() { close(release) })
+	waitFollowSignal(t, refreshed)
+}
+
+func TestLifecycleDrainStopsForegroundRefreshBetweenAccounts(t *testing.T) {
+	app, _, file, _ := resetFollowApp(t)
+	now := app.store.Now()
+	other := file
+	other.ID, other.AuthIndex = "other-host-id", "zz-other-account"
+	app.store.ApplyResetSnapshot(billing.ResetSnapshot{AuthIndex: other.AuthIndex, Provider: "codex", CredentialRef: billing.CredentialFingerprint(other.ID), AttemptedAt: now, SyncedAt: now,
+		Windows: []billing.UpstreamWindow{{ID: "primary_window", PeriodSeconds: 18000, ResetAt: now.Add(time.Hour)}}})
+	if err := app.store.SetResetFollow(billing.CallerScope("sk-dummy-follow-b"), other.AuthIndex); err != nil {
+		t.Fatal(err)
+	}
+	entered, release := make(chan struct{}), make(chan struct{})
+	var once sync.Once
+	t.Cleanup(func() { once.Do(func() { close(release) }) })
+	var queries atomic.Int32
+	caller := resetFollowHost(t, file, func(req hostHTTPRequest) (json.RawMessage, error) {
+		if strings.HasSuffix(req.URL, "/usage") && queries.Add(1) == 1 {
+			close(entered)
+			<-release
+		}
+		return resetQuotaResponse(), nil
+	})
+	app.SetHostCaller(func(method string, payload any) (json.RawMessage, error) {
+		if method == hostAuthList {
+			return json.Marshal(hostAuthListResponse{Files: []hostAuthFile{file, other}})
+		}
+		return caller(method, payload)
+	})
+	request := mustMarshal(t, ManagementRequest{Method: http.MethodGet, Path: managementBase + routeKeys,
+		Query: map[string][]string{"refresh_reset_follow": {"1"}}, HostCallbackID: "foreground"})
+	refreshed := make(chan struct{})
+	go func() { defer close(refreshed); _, _ = app.HandleMethod(MethodManagementHandle, request) }()
+	waitFollowSignal(t, entered)
+	quiesced := make(chan struct{})
+	go func() {
+		defer close(quiesced)
+		if _, err := app.HandleMethod(MethodPluginQuiesce, nil); err != nil {
+			t.Error(err)
+		}
+	}()
+	// The drain is visible before quiesce takes the writer lock.
+	deadline := time.Now().Add(5 * time.Second)
+	for !resetSyncStopped(app.drainSignal()) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	once.Do(func() { close(release) })
+	waitFollowSignal(t, refreshed)
+	waitFollowSignal(t, quiesced)
+	if queries.Load() != 1 {
+		t.Fatalf("draining refresh queried %d accounts", queries.Load())
 	}
 }

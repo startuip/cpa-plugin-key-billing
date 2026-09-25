@@ -126,6 +126,18 @@ func (s *Store) Configure(cfg Config) error {
 	return nil
 }
 
+// UsesStorage reports whether cfg keeps the database that is already open, in
+// which case Configure only replaces settings.
+func (s *Store) UsesStorage(cfg Config) bool {
+	path, err := filepath.Abs(cfg.normalized().StateFile)
+	if err != nil {
+		return false
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.repo != nil && s.path == path
+}
+
 // Close releases the database when the host shuts down the plugin.
 func (s *Store) Close() {
 	s.cfgMu.Lock()
