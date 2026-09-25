@@ -90,6 +90,8 @@ jobs:
         uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
+          # Runner caches can lag a patch release; always build with the latest one.
+          check-latest: true
           cache-dependency-path: go.sum
 
       - name: Verify native runner architecture
