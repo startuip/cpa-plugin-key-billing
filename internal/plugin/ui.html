@@ -4406,7 +4406,11 @@
             reject(new UIError(message));
           };
           const timer = setTimeout(() => failed(m("ui.chart_loading_timed_out")), 10000);
-          script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js";
+          // The npm package's own minified build, pinned by hash: the page holds the
+          // management key, so the browser must reject any altered copy.
+          script.src = "https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.js";
+          script.integrity = "sha384-zYPBGXwO4633CABX/5Spf6emCKUJCfoOkhOMYyxMsatqQZPnDblmmOewfjsIVWCM";
+          script.crossOrigin = "anonymous";
           script.onload = () => {
             if (typeof Chart !== "function") return failed(m("ui.chart_library_failed_to_initialize"));
             clearTimeout(timer);

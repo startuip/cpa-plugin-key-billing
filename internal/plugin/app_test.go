@@ -187,3 +187,23 @@ func TestHandleMethodRecoversFromPanic(t *testing.T) {
 		t.Fatal("a panicking handler returned no error")
 	}
 }
+
+func TestUIScriptPolicyAdmitsOnlyThePinnedChartScript(t *testing.T) {
+	app := newConfiguredApp(t)
+	raw, err := app.HandleMethod(MethodManagementHandle, mustMarshal(t, ManagementRequest{Method: http.MethodGet, Path: resourceBase + resourceUIPath}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var response ManagementResponse
+	decodeResult(t, raw, &response)
+	policy := response.Headers.Get("Content-Security-Policy")
+	if !strings.Contains(policy, "script-src 'unsafe-inline' "+chartScriptURL+";") || strings.Contains(policy, "https://cdn.jsdelivr.net;") ||
+		strings.Contains(policy, "https://cdn.jsdelivr.net ") {
+		t.Fatalf("policy = %q", policy)
+	}
+	page := string(response.Body)
+	if !strings.Contains(page, `script.src = "`+chartScriptURL+`";`) ||
+		!strings.Contains(page, `script.integrity = "sha384-`) || !strings.Contains(page, `script.crossOrigin = "anonymous";`) {
+		t.Fatal("the UI does not load the pinned chart script with integrity")
+	}
+}
