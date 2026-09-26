@@ -130,6 +130,7 @@ The plugin cannot read CPA's API key list and synchronizes it only when an admin
 - A manual quota reset keeps shared reset times unchanged. Independent cycles restart when the next request is admitted.
 - Custom model prices take precedence over models.dev reference prices. Requests are rejected if neither is available.
 - A request with a matching reference price is admitted without waiting for a download, even when the reference prices are more than 24 hours old. Reference prices older than 24 hours are synchronized when CPA saves its configuration or restarts, and can be refreshed manually in the management center; a request whose model has no matching price also triggers synchronization, at most hourly and with backoff after failures.
+- Usage that CPA cannot split into input and output, such as from the Meta and Devin providers in CPA v7.3.17, is recorded at $0 and does not count toward amount quotas; it still counts toward token quotas when its token total is reliable. The plugin log reports each such provider once, and its request events are marked Not billed. To limit this usage, use token quotas or routing rules.
 - Request events are retained for 365 days.
 
 ## Following upstream resets

@@ -379,6 +379,8 @@
   "ui.long_context": "Long context",
   "ui.standard": "Standard",
   "ui.upstream_served_a_model_other_than_the_one_requested": "Upstream served a model other than the one requested",
+  "ui.not_billed": "Not billed",
+  "ui.unbilled_usage_hint": "CPA could not split this provider's tokens into input and output, so the request was recorded at $0 and does not count toward amount quotas",
   "ui.unknown_executor": "Unknown executor",
   "ui.unknown_source": "Unknown source",
   "ui.time_to_first_tokenvaluetotal_latency": "Time to first token{v0}Total latency",

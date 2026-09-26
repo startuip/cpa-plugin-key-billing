@@ -261,3 +261,45 @@ func TestReferenceUsageLogsAppliedTierRatesAndBillingModel(t *testing.T) {
 		}
 	}
 }
+
+func TestUnbilledUsageIsLoggedOncePerProvider(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	store := newAccountStore(t, now)
+	if _, err := store.ClearPluginLogs(); err != nil {
+		t.Fatal(err)
+	}
+	unclassified := TokenBreakdown{Quality: TokenAccountingUnclassified, TotalTokens: 1500, UnclassifiedTokens: 1500}
+	inconsistent := TokenBreakdown{Quality: TokenAccountingInconsistent, TotalTokens: 900, UnclassifiedTokens: 900}
+	event := func(provider string, breakdown TokenBreakdown, model string) UsageEvent {
+		value := subsetEvent("scope-a", now)
+		value.Provider, value.ExecutorType, value.Breakdown = provider, "", breakdown
+		value.UpstreamModel, value.RouteModel = model, model
+		return value
+	}
+	store.RecordUsage(event("meta", unclassified, "gpt-5.5"))
+	store.RecordUsage(event("Meta", unclassified, "gpt-5.5"))
+	store.RecordUsageError(event("devin", inconsistent, "gpt-5.5"), RequestError{StatusCode: 502})
+	// Complete usage is charged, and usage without any price is not a split
+	// failure, so neither adds this log.
+	store.RecordUsage(event("codex", completeBreakdown(500, 400, 100, 500, 200), "gpt-5.5"))
+	store.RecordUsage(event("kimi", unclassified, "unpriced-model"))
+
+	logs := mustPluginLogs(t, store)
+	if len(logs) != 2 {
+		t.Fatalf("unbilled usage logs = %+v", logs)
+	}
+	for _, want := range []string{`provider "meta" reported for model "gpt-5.5"`, `provider "devin"`} {
+		found := false
+		for _, entry := range logs {
+			found = found || entry.Level == PluginLogError && strings.Contains(entry.Message, want)
+		}
+		if !found {
+			t.Fatalf("unbilled usage logs missing %q: %+v", want, logs)
+		}
+	}
+	for _, entry := range mustRequestEvents(t, store, RequestEventQuery{}).Entries {
+		if entry.Provider != "codex" && entry.Cost.TotalUSD != 0 {
+			t.Fatalf("unbilled usage was charged: %+v", entry)
+		}
+	}
+}

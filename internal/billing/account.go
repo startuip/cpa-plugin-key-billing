@@ -2,6 +2,7 @@ package billing
 
 import (
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -143,10 +144,59 @@ func (s *Store) recordUsage(event UsageEvent, failure *RequestError) {
 	if missingCycleTime {
 		s.AddPluginLog(PluginLogError, "Usage record has no request time; preserving the event without deducting quota")
 	}
+	if price.Source != PriceSourceNone && event.Breakdown.TotalTokens > 0 && !event.Breakdown.Billable() {
+		s.reportUnbilledUsage(event, billingModel)
+	}
 	if price.Source == PriceSourceReference {
 		s.AddPluginLog(PluginLogDebug,
 			"Reference pricing: billing_model=%q, cost=$%.8f, rates per million tokens: input=$%g, output=$%g, cache_read=$%g, cache_write=$%g",
 			billingModel, cost.TotalUSD, cost.AppliedInputPer1M, cost.AppliedOutputPer1M,
 			cost.AppliedCacheReadPer1M, cost.AppliedCacheWritePer1M)
 	}
+}
+
+// reportUnbilledUsage logs, once per provider, priced usage whose tokens
+// CLIProxyAPI does not split into input and output. Such usage is kept at zero
+// cost rather than guessed, so amount quotas do not limit that provider.
+func (s *Store) reportUnbilledUsage(event UsageEvent, billingModel string) {
+	provider := strings.TrimSpace(event.Provider)
+	if provider == "" {
+		provider = strings.TrimSpace(event.ExecutorType)
+	}
+	if provider == "" {
+		provider = "unknown"
+	}
+	if !s.unbilled.onset(strings.ToLower(provider)) {
+		return
+	}
+	s.AddPluginLog(PluginLogError,
+		"Usage recorded without cost: CLIProxyAPI cannot split the %d tokens provider %q reported for model %q into input and output, "+
+			"so amount quotas do not limit this provider. Later requests from it are not logged again until the plugin restarts",
+		event.Breakdown.TotalTokens, provider, billingModel)
+}
+
+// unbilledProviders remembers which providers have already been reported by
+// reportUnbilledUsage, so each of their requests does not add another log.
+type unbilledProviders struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func (u *unbilledProviders) onset(provider string) bool {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if _, exists := u.seen[provider]; exists {
+		return false
+	}
+	if u.seen == nil {
+		u.seen = make(map[string]struct{})
+	}
+	u.seen[provider] = struct{}{}
+	return true
+}
+
+func (u *unbilledProviders) reset() {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	u.seen = nil
 }

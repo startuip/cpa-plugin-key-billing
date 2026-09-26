@@ -8097,6 +8097,8 @@
           const tps = outputTPS(cost, entry.latency_ms, measured);
           const tokens = (value) => (measured ? exactTokens(value) : "—");
           const hasTTFT = Number(entry.ttft_ms || 0) > 0;
+          // A priced request whose tokens CPA could not split into input and output is kept at zero cost.
+          const unbilled = !account && entry.price_source !== "none" && ["unclassified", "inconsistent"].includes(entry.accounting_quality);
 
           const billingModel = entry.billing_model || entry.upstream_model || "—";
           const upstreamModel = entry.upstream_model || "—";
@@ -8197,7 +8199,18 @@
                     )
                   : usd(cost.total_usd)
               ),
-              costNote ? el("div", { class: "muted small" }, costNote) : null
+              costNote ? el("div", { class: "muted small" }, costNote) : null,
+              unbilled
+                ? el(
+                    "div",
+                    { class: "small" },
+                    el("span", {
+                      class: "tag warn",
+                      text: m("ui.not_billed"),
+                      ...hoverTooltipProps(() => [el("div", { class: "hover-tooltip-body", text: m("ui.unbilled_usage_hint") })], true)
+                    })
+                  )
+                : null
             )
           );
         };
