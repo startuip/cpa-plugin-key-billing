@@ -36,6 +36,10 @@ type Store struct {
 	// reported, so retries against one do not repeat it.
 	blocked blockedKeys
 
+	// unbilled remembers the providers already reported for usage recorded
+	// without cost; a new database starts over so its log records them too.
+	unbilled unbilledProviders
+
 	errMu     sync.Mutex
 	lastError string
 
@@ -123,6 +127,7 @@ func (s *Store) Configure(cfg Config) error {
 	s.path = path
 	s.dirty = Changes{}
 	s.mu.Unlock()
+	s.unbilled.reset()
 	previousReferences.close()
 	if previous != nil {
 		s.closeRepository(previous)

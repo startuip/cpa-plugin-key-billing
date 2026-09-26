@@ -721,10 +721,12 @@ def event_sample(
     response_tier="",
     long_context=False,
     failed=False,
+    unclassified=False,
     multiplier=1,
 ):
     uncached, cache_read, cache_write, output = tokens
-    if failed:
+    if failed or unclassified:
+        # Unclassified usage is recorded without a token or cost breakdown.
         uncached = cache_read = cache_write = output = 0
     return {
         "key_index": key_index,
@@ -740,7 +742,7 @@ def event_sample(
         "failed": failed,
         "latency_ms": latency_ms,
         "ttft_ms": ttft_ms,
-        "accounting_quality": "" if failed else "complete",
+        "accounting_quality": "" if failed else "unclassified" if unclassified else "complete",
         "price_source": "custom",
         "cost": make_cost(
             uncached,
@@ -752,7 +754,7 @@ def event_sample(
             long_context,
             multiplier if not failed else 1,
         ),
-        "reasoning_tokens": 0 if failed else reasoning_tokens,
+        "reasoning_tokens": 0 if failed or unclassified else reasoning_tokens,
     }
 
 
@@ -761,6 +763,7 @@ def event_sample(
 SUCCESS_EVENT_SAMPLES = [
     event_sample(0, "codex · dev-team@example.com", "codex", "gpt-5.6-sol", "CodexExecutor", "high", "priority", 11513, 8209, 266, (712, 91648, 4096, 425), (4, 0.4, 5, 20), multiplier=2.5, response_tier="priority"),
     event_sample(5, "codex · dev-team@example.com", "codex", "codex-auto-review", "CodexWebsocketsExecutor", "low", "auto", 2516, 1431, 10, (1030, 49920, 0, 75), (0.2, 0.02, 0.25, 1.2), response_model="gpt-5.6-luna", response_tier="default"),
+    event_sample(4, "meta · ml-team@example.com", "meta", "llama-4-maverick", "MetaExecutor", "", "auto", 3184, 1462, 0, (0, 0, 0, 0), (0, 0, 0, 0), unclassified=True),
     event_sample(1, "codex · dev-team@example.com", "codex", "gpt-5.5", "CodexWebsocketsExecutor", "medium", "auto", 2417, 1103, 0, (1194, 95616, 0, 73), (5, 0.5, 5, 30)),
     event_sample(1, "codex · dev-team@example.com", "codex", "gpt-5.6-sol", "CodexWebsocketsExecutor", "high", "auto", 5306, 2121, 21, (798, 169984, 0, 201), (4, 0.4, 5, 20)),
     event_sample(2, "claude · platform@example.com", "claude", "deepseek-v4-pro", "ClaudeExecutor", "high", "auto", 10061, 637, 0, (38049, 0, 0, 474), (0.435, 0.003625, 0.435, 0.87), billing_model="claude/deepseek-v4-pro", response_model="deepseek-v4-pro"),

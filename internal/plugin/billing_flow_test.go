@@ -5,6 +5,7 @@ import (
 	"math"
 	"net/http"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -245,6 +246,45 @@ func TestUsageHandleDoesNotGuessUnknownProviderAccounting(t *testing.T) {
 	assertCostClose(t, cost, 0)
 	if entries := requestEventEntries(t, app); len(entries) != 1 || entries[0].AccountingQuality != billing.TokenAccountingUnclassified {
 		t.Fatalf("entries = %+v", entries)
+	}
+}
+
+// CLIProxyAPI v7.3 classifies neither its Meta nor its Devin executor, so their
+// priced usage stays at zero cost and is reported once per provider instead.
+func TestUsageHandleLogsUnclassifiedProvidersOnce(t *testing.T) {
+	app := newAppWithPrice(t, true)
+	if _, err := app.store.ClearPluginLogs(); err != nil {
+		t.Fatal(err)
+	}
+	for _, record := range []UsageRecord{
+		{Provider: "meta", ExecutorType: "MetaExecutor"},
+		{Provider: "meta", ExecutorType: "MetaExecutor"},
+		{Provider: "devin", ExecutorType: "DevinExecutor"},
+	} {
+		record.Model, record.Alias, record.APIKey, record.Generate = flowModel, flowModel, testAPIKey, true
+		record.RequestedAt = app.store.Now()
+		record.Detail = UsageDetail{InputTokens: 1000, OutputTokens: 500, ReasoningTokens: 100, CacheReadTokens: 200, TotalTokens: 1500}
+		publishUsageRecord(t, app, record)
+	}
+	cost, requests := requestEventCost(t, app)
+	if requests != 3 {
+		t.Fatalf("requests = %d", requests)
+	}
+	assertCostClose(t, cost, 0)
+	page, err := app.store.PluginLogsPage(billing.PluginLogQuery{Limit: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var providers []string
+	for _, entry := range page.Entries {
+		for _, provider := range []string{"meta", "devin"} {
+			if entry.Level == billing.PluginLogError && strings.Contains(entry.Message, `provider "`+provider+`"`) {
+				providers = append(providers, provider)
+			}
+		}
+	}
+	if len(page.Entries) != 2 || len(providers) != 2 {
+		t.Fatalf("plugin logs = %+v", page.Entries)
 	}
 }
 

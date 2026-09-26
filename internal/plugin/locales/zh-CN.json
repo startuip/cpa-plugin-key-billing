@@ -379,6 +379,8 @@
   "ui.long_context": "长上下文",
   "ui.standard": "标准",
   "ui.upstream_served_a_model_other_than_the_one_requested": "上游实际服务的模型与请求的模型不一致",
+  "ui.not_billed": "未计费",
+  "ui.unbilled_usage_hint": "CPA 无法将该服务商的 Token 拆分为输入和输出，请求按 $0 记录，不计入金额额度",
   "ui.unknown_executor": "执行器未知",
   "ui.unknown_source": "来源未知",
   "ui.time_to_first_tokenvaluetotal_latency": "首字延迟{v0}总延迟",
