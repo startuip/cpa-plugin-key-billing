@@ -91,7 +91,7 @@ plugins:
       codex_fast_mode_billing: false # Charge 2.5× for Codex priority requests
       mask_api_key_view_emails: false # Mask email addresses in API key account views
       pause_reset_follow_sync: false # Pause the 30-minute schedule; set true before disabling the plugin
-      allow_api_key_quota_reset: false # Allow API key users to reset accessible Codex auth file quotas using upstream reset credits
+      allow_api_key_quota_reset: false # Allow API key users to reset accessible Codex auth file quotas using upstream reset credits; after deleting a key in CPA, open the plugin page to revoke it
       reference_price_proxy: "" # models.dev download proxy: empty uses HTTPS_PROXY and related environment variables, direct / none connects directly, or an HTTP, HTTPS, SOCKS5, or SOCKS5H URL
       state_file: "plugins/cpa-key-billing-state-v1.db"
 ```
@@ -119,6 +119,8 @@ http(s)://<CLIProxyAPI address>/v0/resource/plugins/cpa-key-billing/ui#account
 ```
 
 On the Auth Files page, key holders can see the names, email addresses, and quotas of the upstream accounts their routing allows; a key without credential restrictions sees every OAuth account. To keep upstream account emails private, enable `mask_api_key_view_emails` or restrict the credentials in routing rules.
+
+The plugin cannot read CPA's API key list and synchronizes it only when an administrator opens the plugin page. **After deleting a key in CPA, open the plugin page once.** Until then, the deleted key can still open the user page and view its usage and upstream account quotas, and can reset Codex quotas when `allow_api_key_quota_reset` is enabled.
 
 ## Billing and quotas
 

@@ -253,7 +253,7 @@ func registration() Registration {
 				{
 					Name:        "allow_api_key_quota_reset",
 					Type:        "boolean",
-					Description: "Allow API key users to reset Codex auth file quotas using upstream reset credits",
+					Description: "Allow API key users to reset Codex auth file quotas using upstream reset credits; a key deleted in CPA keeps this access until the plugin page is next opened",
 				},
 				{
 					Name:        "pause_reset_follow_sync",
