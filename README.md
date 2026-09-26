@@ -89,7 +89,7 @@ plugins:
       codex_fast_mode_billing: false # 开启后，Codex 的 priority 请求按 2.5 倍计费
       mask_api_key_view_emails: false # 对 API Key 查询页面返回的邮箱进行掩码脱敏
       pause_reset_follow_sync: false # 暂停每 30 分钟自动同步；停用插件前先设为 true
-      allow_api_key_quota_reset: false # 允许 API Key 用户重置可访问的 Codex 认证文件额度，消耗上游重置次数
+      allow_api_key_quota_reset: false # 允许 API Key 用户重置可访问的 Codex 认证文件额度，消耗上游重置次数；在 CPA 删除 Key 后需打开一次插件页面才会收回
       reference_price_proxy: "" # models.dev 参考价下载代理：留空使用 HTTPS_PROXY 等环境变量，direct / none 表示直连，也可填 HTTP、HTTPS、SOCKS5、SOCKS5H 地址
       state_file: "plugins/cpa-key-billing-state-v1.db"
 ```
@@ -117,6 +117,8 @@ http(s)://<CLIProxyAPI 地址>/v0/resource/plugins/cpa-key-billing/ui#account
 ```
 
 普通用户可在「认证文件」页查看路由允许访问的上游账号的名称、邮箱和额度；Key 未限制凭证时，可看到全部 OAuth 账号。如不希望暴露上游账号邮箱，请开启 `mask_api_key_view_emails`，或用路由规则限制可访问的凭证。
+
+插件读不到 CPA 的 API Key 列表，只在管理员打开插件页面时同步。**在 CPA 删除 Key 后，请打开一次插件页面**：在此之前，被删除的 Key 仍能打开用户页，查看用量和上游账号额度；开启 `allow_api_key_quota_reset` 时还能重置 Codex 额度。
 
 ## 计费与订阅规则
 
