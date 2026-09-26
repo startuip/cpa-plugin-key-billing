@@ -1,5 +1,20 @@
 # Changelog
 
+## v1.3.21
+
+### 升级须知
+
+- 安装脚本改为从 `startuip/cpa-plugin-key-billing` 的 Releases 下载，请使用 README 中的新安装命令升级；原 `haowang02` 仓库的安装命令只能安装上游版本。
+- CPA v7.3.17 停用插件时同样不会通知插件。使用跟随重置时，停用插件前请先在插件配置中设置 `pause_reset_follow_sync: true` 并保存，或关闭所有 Key 的跟随。
+
+### 后端
+
+- 插件信息中的仓库地址改为 `https://github.com/startuip/cpa-plugin-key-billing`。
+
+### 前端
+
+- 页面底部的项目主页和 License 链接改为指向 `startuip/cpa-plugin-key-billing`。
+
 ## v1.3.20
 
 ### 升级须知
