@@ -23,7 +23,7 @@ const (
 	MenuLabel       = "API Key Billing"
 	MenuDescription = "Manage downstream API key routing, billing, concurrency limits, subscription quotas, and usage"
 
-	GitHubRepository = "https://github.com/haowang02/cpa-plugin-key-billing"
+	GitHubRepository = "https://github.com/startuip/cpa-plugin-key-billing"
 )
 
 const (
