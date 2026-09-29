@@ -1,5 +1,19 @@
 # Changelog
 
+## v1.3.20
+
+### 升级须知
+
+- 插件改由 startuip/cpa-plugin-key-billing 发布，安装脚本从该仓库下载；插件商店提供的仍是原作者版本，请勿通过商店更新。
+
+### 后端
+
+- 插件向 CLIProxyAPI 上报的仓库地址改为 startuip/cpa-plugin-key-billing。
+
+### 前端
+
+- 页脚的项目与许可证链接指向 startuip/cpa-plugin-key-billing。
+
 ## v1.3.19
 
 ### 升级须知
