@@ -330,30 +330,31 @@ func authCategoryOrder(category string) int {
 	}
 }
 
-func (a *App) readAuthCredential(file hostAuthFile) (map[string]any, error) {
+func (a *App) readAuthCredential(callbackID string, file hostAuthFile) (map[string]any, upstreamRoute, error) {
 	raw, errGet := a.hostCaller(hostAuthGet, map[string]string{"auth_index": file.AuthIndex})
 	if errGet != nil {
-		return nil, messages.Errorf("Read auth file: %w", errGet)
+		return nil, upstreamRoute{}, messages.Errorf("Read auth file: %w", errGet)
 	}
 	var auth hostAuthGetResponse
 	if errDecode := json.Unmarshal(raw, &auth); errDecode != nil {
-		return nil, messages.Errorf("Parse auth file: %w", errDecode)
+		return nil, upstreamRoute{}, messages.Errorf("Parse auth file: %w", errDecode)
 	}
 	var credential map[string]any
 	if errDecode := json.Unmarshal(auth.JSON, &credential); errDecode != nil {
-		return nil, messages.Errorf("Invalid auth file contents")
+		return nil, upstreamRoute{}, messages.Errorf("Invalid auth file contents")
 	}
 	if credentialUsesAPIKey(credential) {
-		return nil, messages.Errorf("API key credentials do not support this quota query")
+		return nil, upstreamRoute{}, messages.Errorf("API key credentials do not support this quota query")
 	}
-	if credentialString(credential, "proxy_url", "proxyUrl") != "" {
-		return nil, messages.Errorf("Quota queries do not support a separate proxy for an auth file")
+	route, errRoute := authUpstreamRoute(callbackID, credential)
+	if errRoute != nil {
+		return nil, upstreamRoute{}, errRoute
 	}
-	return credential, nil
+	return credential, route, nil
 }
 
 func (a *App) fetchAuthQuota(callbackID string, file hostAuthFile, provider string) (authQuotaResponse, error) {
-	credential, errCredential := a.readAuthCredential(file)
+	credential, route, errCredential := a.readAuthCredential(callbackID, file)
 	if errCredential != nil {
 		return authQuotaResponse{}, errCredential
 	}
@@ -372,19 +373,19 @@ func (a *App) fetchAuthQuota(callbackID string, file hostAuthFile, provider stri
 		if plan := credentialString(credential, "plan_type", "planType"); plan != "" {
 			result.Plan = normalizeCodexPlan(plan)
 		}
-		err = a.fetchCodexQuota(callbackID, token, credentialString(credential, "account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"), &result)
+		err = a.fetchCodexQuota(route, token, credentialString(credential, "account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"), &result)
 	case "claude":
-		err = a.fetchClaudeQuota(callbackID, token, &result)
+		err = a.fetchClaudeQuota(route, token, &result)
 	case "kimi":
-		err = a.fetchKimiQuota(callbackID, token, &result)
+		err = a.fetchKimiQuota(route, token, &result)
 	case "xai":
-		err = a.fetchXAIQuota(callbackID, token, credentialString(credential, "user_id", "userId", "xai_user_id", "xaiUserId", "sub", "subject"), &result)
+		err = a.fetchXAIQuota(route, token, credentialString(credential, "user_id", "userId", "xai_user_id", "xaiUserId", "sub", "subject"), &result)
 	case "antigravity":
 		projectID := firstNonEmptyString(file.ProjectID, credentialString(credential, "project_id", "projectId", "gemini_virtual_project"))
 		if projectID == "" {
 			return result, messages.Errorf("Auth file is missing project_id")
 		}
-		err = a.fetchAntigravityQuota(callbackID, token, projectID, &result)
+		err = a.fetchAntigravityQuota(route, token, projectID, &result)
 	}
 	if err != nil {
 		return result, err
@@ -393,7 +394,7 @@ func (a *App) fetchAuthQuota(callbackID string, file hostAuthFile, provider stri
 }
 
 func (a *App) resetCodexQuota(callbackID string, file hostAuthFile, resetID string) error {
-	credential, errCredential := a.readAuthCredential(file)
+	credential, route, errCredential := a.readAuthCredential(callbackID, file)
 	if errCredential != nil {
 		return errCredential
 	}
@@ -406,14 +407,14 @@ func (a *App) resetCodexQuota(callbackID string, file hostAuthFile, resetID stri
 		headers.Set("Chatgpt-Account-Id", accountID)
 	}
 	_, errCall := a.upstreamCall(
-		callbackID, http.MethodPost, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
+		route, http.MethodPost, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits/consume",
 		token, headers, map[string]string{"redeem_request_id": resetID},
 	)
 	return errCall
 }
 
-func (a *App) upstream(callbackID, method, endpoint, token string, headers http.Header, body any) (map[string]any, error) {
-	object, errCall := a.upstreamCall(callbackID, method, endpoint, token, headers, body)
+func (a *App) upstream(route upstreamRoute, method, endpoint, token string, headers http.Header, body any) (map[string]any, error) {
+	object, errCall := a.upstreamCall(route, method, endpoint, token, headers, body)
 	if errCall != nil {
 		return nil, errCall
 	}
@@ -424,7 +425,7 @@ func (a *App) upstream(callbackID, method, endpoint, token string, headers http.
 }
 
 // Reset responses may be empty even when successful.
-func (a *App) upstreamCall(callbackID, method, endpoint, token string, headers http.Header, body any) (map[string]any, error) {
+func (a *App) upstreamCall(route upstreamRoute, method, endpoint, token string, headers http.Header, body any) (map[string]any, error) {
 	if headers == nil {
 		headers = make(http.Header)
 	}
@@ -438,15 +439,22 @@ func (a *App) upstreamCall(callbackID, method, endpoint, token string, headers h
 			return nil, messages.Errorf("Build quota request: %w", errMarshal)
 		}
 	}
-	raw, errCall := a.hostCaller(hostHTTPDo, hostHTTPRequest{
-		HostCallbackID: callbackID, Method: method, URL: endpoint, Headers: headers, Body: rawBody,
-	})
-	if errCall != nil {
-		return nil, messages.Errorf("Quota request failed: %s", redactSecret(errCall.Error(), token))
-	}
 	var response hostHTTPResponse
-	if errDecode := json.Unmarshal(raw, &response); errDecode != nil {
-		return nil, messages.Errorf("Parse quota response: %w", errDecode)
+	if route.direct {
+		var errSend error
+		if response, errSend = route.send(method, endpoint, headers, rawBody, token); errSend != nil {
+			return nil, errSend
+		}
+	} else {
+		raw, errCall := a.hostCaller(hostHTTPDo, hostHTTPRequest{
+			HostCallbackID: route.callbackID, Method: method, URL: endpoint, Headers: headers, Body: rawBody,
+		})
+		if errCall != nil {
+			return nil, messages.Errorf("Quota request failed: %s", redactSecret(errCall.Error(), token))
+		}
+		if errDecode := json.Unmarshal(raw, &response); errDecode != nil {
+			return nil, messages.Errorf("Parse quota response: %w", errDecode)
+		}
 	}
 	var object map[string]any
 	if len(response.Body) > 0 {
@@ -480,12 +488,12 @@ func upstreamErrorMessage(object map[string]any) string {
 	return message
 }
 
-func (a *App) fetchCodexQuota(callbackID, token, accountID string, result *authQuotaResponse) error {
+func (a *App) fetchCodexQuota(route upstreamRoute, token, accountID string, result *authQuotaResponse) error {
 	headers := http.Header{"User-Agent": {"codex_cli_rs/0.76.0"}, "Content-Type": {"application/json"}}
 	if accountID != "" {
 		headers.Set("Chatgpt-Account-Id", accountID)
 	}
-	object, errCall := a.upstream(callbackID, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", token, headers, nil)
+	object, errCall := a.upstream(route, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", token, headers, nil)
 	if errCall != nil {
 		return errCall
 	}
@@ -510,7 +518,7 @@ func (a *App) fetchCodexQuota(callbackID, token, accountID string, result *authQ
 	headers.Set("Accept", "application/json")
 	headers.Set("OpenAI-Beta", "codex-1")
 	headers.Set("Originator", "Codex Desktop")
-	credits, err := a.upstream(callbackID, http.MethodGet, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", token, headers, nil)
+	credits, err := a.upstream(route, http.MethodGet, "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits", token, headers, nil)
 	details := normalizeCodexResetCredits(credits)
 	result.RateLimitResetCreditsUnavailable = err != nil || details.invalidPayload
 	if result.RateLimitResetCreditsUnavailable {
@@ -650,9 +658,9 @@ func claudeFableLimit(usage map[string]any) map[string]any {
 	return fallback
 }
 
-func (a *App) fetchClaudeQuota(callbackID, token string, result *authQuotaResponse) error {
+func (a *App) fetchClaudeQuota(route upstreamRoute, token string, result *authQuotaResponse) error {
 	headers := http.Header{"Anthropic-Beta": {"oauth-2025-04-20"}, "Content-Type": {"application/json"}}
-	usage, errCall := a.upstream(callbackID, http.MethodGet, "https://api.anthropic.com/api/oauth/usage", token, headers, nil)
+	usage, errCall := a.upstream(route, http.MethodGet, "https://api.anthropic.com/api/oauth/usage", token, headers, nil)
 	if errCall != nil {
 		return errCall
 	}
@@ -696,7 +704,7 @@ func (a *App) fetchClaudeQuota(callbackID, token string, result *authQuotaRespon
 			result.Quota = append(result.Quota, row)
 		}
 	}
-	if profile, errProfile := a.upstream(callbackID, http.MethodGet, "https://api.anthropic.com/api/oauth/profile", token, headers, nil); errProfile == nil {
+	if profile, errProfile := a.upstream(route, http.MethodGet, "https://api.anthropic.com/api/oauth/profile", token, headers, nil); errProfile == nil {
 		account, organization := objectMap(profile, "account"), objectMap(profile, "organization")
 		max, hasMax := boolValue(account, "has_claude_max", "hasClaudeMax")
 		pro, hasPro := boolValue(account, "has_claude_pro", "hasClaudePro")
@@ -717,8 +725,8 @@ func (a *App) fetchClaudeQuota(callbackID, token string, result *authQuotaRespon
 	return nil
 }
 
-func (a *App) fetchKimiQuota(callbackID, token string, result *authQuotaResponse) error {
-	usage, errCall := a.upstream(callbackID, http.MethodGet, "https://api.kimi.com/coding/v1/usages", token, nil, nil)
+func (a *App) fetchKimiQuota(route upstreamRoute, token string, result *authQuotaResponse) error {
+	usage, errCall := a.upstream(route, http.MethodGet, "https://api.kimi.com/coding/v1/usages", token, nil, nil)
 	if errCall != nil {
 		return errCall
 	}
@@ -763,13 +771,13 @@ func (a *App) fetchKimiQuota(callbackID, token string, result *authQuotaResponse
 	return nil
 }
 
-func (a *App) fetchXAIQuota(callbackID, token, userID string, result *authQuotaResponse) error {
+func (a *App) fetchXAIQuota(route upstreamRoute, token, userID string, result *authQuotaResponse) error {
 	headers := http.Header{"X-Xai-Token-Auth": {"xai-grok-cli"}, "X-Grok-Client-Version": {"0.2.93"}, "User-Agent": {"grok-pager/0.2.93 grok-shell/0.2.93"}, "Accept": {"*/*"}}
 	if userID != "" {
 		headers.Set("X-Userid", userID)
 	}
-	weekly, weeklyErr := a.upstream(callbackID, http.MethodGet, "https://cli-chat-proxy.grok.com/v1/billing?format=credits", token, headers.Clone(), nil)
-	monthly, monthlyErr := a.upstream(callbackID, http.MethodGet, "https://cli-chat-proxy.grok.com/v1/billing", token, headers.Clone(), nil)
+	weekly, weeklyErr := a.upstream(route, http.MethodGet, "https://cli-chat-proxy.grok.com/v1/billing?format=credits", token, headers.Clone(), nil)
+	monthly, monthlyErr := a.upstream(route, http.MethodGet, "https://cli-chat-proxy.grok.com/v1/billing", token, headers.Clone(), nil)
 	if weeklyErr != nil && monthlyErr != nil {
 		return weeklyErr
 	}
@@ -851,12 +859,12 @@ func (a *App) fetchXAIQuota(callbackID, token, userID string, result *authQuotaR
 	return nil
 }
 
-func (a *App) fetchAntigravityQuota(callbackID, token, projectID string, result *authQuotaResponse) error {
+func (a *App) fetchAntigravityQuota(route upstreamRoute, token, projectID string, result *authQuotaResponse) error {
 	headers := http.Header{"User-Agent": {"antigravity/cli/1.0.13"}}
 	var quota map[string]any
 	var lastErr error
 	for _, endpoint := range []string{"https://daily-cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary", "https://daily-cloudcode-pa.sandbox.googleapis.com/v1internal:retrieveUserQuotaSummary", "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuotaSummary"} {
-		value, err := a.upstream(callbackID, http.MethodPost, endpoint, token, headers.Clone(), map[string]string{"project": projectID})
+		value, err := a.upstream(route, http.MethodPost, endpoint, token, headers.Clone(), map[string]string{"project": projectID})
 		if err != nil {
 			lastErr = err
 			continue
@@ -916,7 +924,7 @@ func (a *App) fetchAntigravityQuota(callbackID, token, projectID string, result 
 		result.Quota = append(result.Quota, groupRows...)
 	}
 	for _, endpoint := range []string{"https://daily-cloudcode-pa.googleapis.com/v1internal:loadCodeAssist", "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist"} {
-		subscription, err := a.upstream(callbackID, http.MethodPost, endpoint, token, headers.Clone(), map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}})
+		subscription, err := a.upstream(route, http.MethodPost, endpoint, token, headers.Clone(), map[string]any{"metadata": map[string]string{"ideType": "ANTIGRAVITY"}})
 		if err != nil {
 			continue
 		}

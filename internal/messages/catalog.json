@@ -373,8 +373,12 @@
     "key": "backend.api_key_credentials_do_not_support_this_quota_query",
     "formats": []
   },
-  "Quota queries do not support a separate proxy for an auth file": {
-    "key": "backend.quota_queries_do_not_support_a_separate_proxy_for_an_auth_file",
+  "The auth file proxy URL is invalid": {
+    "key": "backend.the_auth_file_proxy_url_is_invalid",
+    "formats": []
+  },
+  "The quota response exceeds the size limit": {
+    "key": "backend.the_quota_response_exceeds_the_size_limit",
     "formats": []
   },
   "Auth file has no usable credentials": {

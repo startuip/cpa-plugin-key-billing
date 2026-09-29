@@ -145,7 +145,7 @@ func (a *App) observeCodexUpstream(callbackID, credential string) (time.Time, []
 	if err != nil {
 		return time.Time{}, nil, err
 	}
-	auth, err := a.readAuthCredential(file)
+	auth, route, err := a.readAuthCredential(callbackID, file)
 	if err != nil {
 		return time.Time{}, nil, err
 	}
@@ -157,7 +157,7 @@ func (a *App) observeCodexUpstream(callbackID, credential string) (time.Time, []
 	if accountID := credentialString(auth, "account_id", "accountId", "chatgpt_account_id", "chatgptAccountId"); accountID != "" {
 		headers.Set("Chatgpt-Account-Id", accountID)
 	}
-	usage, err := a.upstream(callbackID, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", token, headers, nil)
+	usage, err := a.upstream(route, http.MethodGet, "https://chatgpt.com/backend-api/wham/usage", token, headers, nil)
 	if err != nil {
 		return time.Time{}, nil, err
 	}
