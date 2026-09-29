@@ -11,9 +11,10 @@ import (
 )
 
 type Plan struct {
-	ID      string        `json:"id"`
-	Name    string        `json:"name"`
-	Windows []QuotaWindow `json:"windows"`
+	ID            string         `json:"id"`
+	Name          string         `json:"name"`
+	Windows       []QuotaWindow  `json:"windows"`
+	UpstreamReset *UpstreamReset `json:"upstream_reset,omitempty"`
 }
 
 // Zero disables a quota dimension. An absent anchor starts cycles on admission.
@@ -76,7 +77,7 @@ func (p Plan) Validate() error {
 		}
 		ids[window.ID], names[strings.ToLower(name)], periods[window.PeriodSeconds] = true, true, true
 	}
-	return nil
+	return p.UpstreamReset.validate()
 }
 
 func prepareWindows(windows, existing []QuotaWindow, now time.Time) ([]QuotaWindow, error) {
@@ -121,6 +122,7 @@ func (w QuotaWindow) sameSchedule(other QuotaWindow) bool {
 
 func clonePlan(plan Plan) Plan {
 	plan.Windows = slices.Clone(plan.Windows)
+	plan.UpstreamReset = cloneUpstreamReset(plan.UpstreamReset)
 	return plan
 }
 
@@ -162,6 +164,7 @@ func (s *Store) CreatePlanWithBindings(plan Plan, scopes []string) (Plan, error)
 			return Plan{}, Changes{}, err
 		}
 		plan.Windows = windows
+		plan.UpstreamReset = normalizeUpstreamReset(plan.UpstreamReset)
 		if errValidate := plan.Validate(); errValidate != nil {
 			return Plan{}, Changes{}, errValidate
 		}
@@ -189,10 +192,13 @@ func (s *Store) CreatePlanWithBindings(plan Plan, scopes []string) (Plan, error)
 	})
 }
 
+// UpstreamReset replaces the followed auth file when present; only its
+// credential is read, and an empty credential stops following.
 type PlanPatch struct {
-	ID      string         `json:"id"`
-	Name    *string        `json:"name,omitempty"`
-	Windows *[]QuotaWindow `json:"windows,omitempty"`
+	ID            string         `json:"id"`
+	Name          *string        `json:"name,omitempty"`
+	Windows       *[]QuotaWindow `json:"windows,omitempty"`
+	UpstreamReset *UpstreamReset `json:"upstream_reset,omitempty"`
 }
 
 // UpdatePlanWithBindings applies a plan edit and, when scopes is non-nil,
@@ -219,6 +225,13 @@ func (s *Store) UpdatePlanWithBindings(patch PlanPatch, scopes *[]string) (Plan,
 					return Plan{}, Changes{}, err
 				}
 				updated.Windows = windows
+			}
+			if patch.UpstreamReset != nil {
+				follow := normalizeUpstreamReset(patch.UpstreamReset)
+				// Keep the observed baseline while the followed auth file stays the same.
+				if follow == nil || updated.UpstreamReset == nil || updated.UpstreamReset.Credential != follow.Credential {
+					updated.UpstreamReset = follow
+				}
 			}
 			if errValidate := updated.Validate(); errValidate != nil {
 				return Plan{}, Changes{}, errValidate

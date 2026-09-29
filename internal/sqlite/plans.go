@@ -22,10 +22,16 @@ func replacePlans(tx *sql.Tx, state *billing.State) error {
 		if err != nil {
 			return err
 		}
+		var upstream []byte
+		if plan.UpstreamReset != nil {
+			if upstream, err = json.Marshal(plan.UpstreamReset); err != nil {
+				return err
+			}
+		}
 		_, errPlan := tx.Exec(`
-			INSERT INTO plans (position, id, name, windows_json)
-			VALUES (?, ?, ?, ?)`,
-			position, plan.ID, plan.Name, string(raw))
+			INSERT INTO plans (position, id, name, windows_json, upstream_reset_json)
+			VALUES (?, ?, ?, ?, ?)`,
+			position, plan.ID, plan.Name, string(raw), string(upstream))
 		if errPlan != nil {
 			return fmt.Errorf("Save subscription plan %s: %w", plan.ID, errPlan)
 		}
@@ -35,19 +41,24 @@ func replacePlans(tx *sql.Tx, state *billing.State) error {
 
 func (d *DB) loadPlans(state *billing.State) error {
 	rows, errQuery := d.db.Query(`
-		SELECT id, name, windows_json FROM plans ORDER BY position`)
+		SELECT id, name, windows_json, upstream_reset_json FROM plans ORDER BY position`)
 	if errQuery != nil {
 		return fmt.Errorf("Read subscription plans: %w", errQuery)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var plan billing.Plan
-		var raw string
-		if errScan := rows.Scan(&plan.ID, &plan.Name, &raw); errScan != nil {
+		var raw, upstream string
+		if errScan := rows.Scan(&plan.ID, &plan.Name, &raw, &upstream); errScan != nil {
 			return fmt.Errorf("Read subscription plans: %w", errScan)
 		}
 		if err := json.Unmarshal([]byte(raw), &plan.Windows); err != nil {
 			return fmt.Errorf("Read subscription plan %s: %w", plan.ID, err)
+		}
+		if upstream != "" {
+			if err := json.Unmarshal([]byte(upstream), &plan.UpstreamReset); err != nil {
+				return fmt.Errorf("Read subscription plan %s: %w", plan.ID, err)
+			}
 		}
 		if err := plan.Validate(); err != nil {
 			return err

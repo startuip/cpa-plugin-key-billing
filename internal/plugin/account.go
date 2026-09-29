@@ -64,11 +64,16 @@ func (a *App) accountProfile(access viewAccess) ManagementResponse {
 	return viewJSON(access, http.StatusOK, response)
 }
 
-func (a *App) accountSubscription(access viewAccess) ManagementResponse {
+func (a *App) accountSubscription(req ManagementRequest, access viewAccess) ManagementResponse {
 	if !access.Tracked {
 		return apiKeyUnauthorized()
 	}
 	view := access.Key
+	if a.followUpstreamResets(req.HostCallbackID, a.store.UpstreamCredentials(access.Scope), false) {
+		if current, ok := a.store.KeyViewForScope(access.Scope); ok {
+			view = current
+		}
+	}
 	return viewJSON(access, http.StatusOK, accountSubscriptionResponse{
 		Subscription: accountSubscription{Name: view.PlanName, QuotaView: view.QuotaView},
 		Concurrency:  accountConcurrency{Limit: view.ConcurrencyLimit, Current: view.CurrentConcurrency},

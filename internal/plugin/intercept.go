@@ -100,6 +100,11 @@ func (a *App) interceptBeforeAuth(raw []byte) ([]byte, error) {
 	if value, ok := req.Metadata[MetadataGenerate].(bool); ok {
 		generate = value
 	}
+	// A due check of a followed auth file may clear exhausted quota. It runs
+	// before the admission lock so other requests never wait for upstream.
+	if scope != "" {
+		a.followUpstreamResets(req.HostCallbackID, a.store.UpstreamCredentials(scope), false)
+	}
 	// Completion and the final admission commit share this lock. Checking the
 	// marker alone would still let completion race with slot/cycle creation.
 	a.admissionsMu.Lock()

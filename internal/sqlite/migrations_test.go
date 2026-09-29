@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -720,5 +721,60 @@ func TestRequestErrorReasonMigration(t *testing.T) {
 				t.Fatal("failed event details were lost", status, errorType, body, err)
 			}
 		})
+	}
+}
+
+func TestPlanUpstreamResetMigration(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.db")
+	raw, err := sql.Open("sqlite3", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer raw.Close()
+	if _, err := raw.Exec(legacyPricingSchemaSQL + `INSERT INTO plans(position,id,name,amount_usd,period_seconds) VALUES(0,'weekly','Weekly',10,604800);`); err != nil {
+		t.Fatal(err)
+	}
+	fixture := &DB{db: raw}
+	if err := fixture.transact(func(tx *sql.Tx) error {
+		for _, step := range []func(*sql.Tx) error{migrateModelPricing, migrateQuotaWindows, migrateCredentials,
+			migrateResponseHeaders, migrateRequestErrorReason, migrateUpstreamResponseReports} {
+			if err := step(tx); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`PRAGMA user_version=17;
+		INSERT INTO request_events(id,at,scope,failed,total_usd) VALUES(1,1,'s',0,2.5),(2,2,'s',1,0);`); err != nil {
+		t.Fatal(err)
+	}
+	database, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer database.Close()
+	snapshot := mustLoad(t, database)
+	if len(snapshot.State.Plans) != 1 || snapshot.State.Plans[0].UpstreamReset != nil || snapshot.RequestEventCount != 2 {
+		t.Fatalf("migrated state = %+v, events = %d", snapshot.State.Plans, snapshot.RequestEventCount)
+	}
+
+	observedAt := time.Date(2026, 9, 20, 8, 0, 0, 123456789, time.UTC)
+	follow := &billing.UpstreamReset{
+		Credential:  billing.CredentialFingerprint("codex-user.json"),
+		Windows:     []billing.UpstreamWindow{{PeriodSeconds: 604800, ResetAt: observedAt.Add(time.Hour), UsedPercent: 42.5, ObservedAt: observedAt}},
+		LastResetAt: observedAt,
+	}
+	snapshot.State.Plans[0].UpstreamReset = follow
+	mustSave(t, database, snapshot.State, billing.Changes{Plans: true})
+	reloaded := mustLoad(t, database)
+	if got := reloaded.State.Plans[0].UpstreamReset; !reflect.DeepEqual(got, follow) {
+		t.Fatalf("upstream reset = %+v, want %+v", got, follow)
+	}
+	snapshot.State.Plans[0].UpstreamReset = nil
+	mustSave(t, database, snapshot.State, billing.Changes{Plans: true})
+	if got := mustLoad(t, database).State.Plans[0].UpstreamReset; got != nil {
+		t.Fatalf("stopped following reloaded as %+v", got)
 	}
 }

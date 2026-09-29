@@ -23,6 +23,7 @@ type App struct {
 	scheduler             subsetScheduler
 	pending               map[string]pendingRouteLog
 	pendingSequence       uint64
+	upstreamChecks        upstreamResetChecks
 }
 
 func (a *App) SetHostCaller(caller HostCaller) {

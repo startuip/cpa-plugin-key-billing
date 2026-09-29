@@ -869,6 +869,8 @@
       }
       .plan-details { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
       .plan-details input, .plan-details select, .plan-window input { width: 100%; min-width: 0; }
+      .plan-details .plan-upstream-field { grid-column: 1 / -1; }
+      .plan-upstream-status { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; min-width: 0; }
       .plan-window.unified { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) minmax(0, 1.4fr); }
       .plan-window-limits {
         grid-column: 1 / -1;
@@ -2324,6 +2326,10 @@
                   <option value="unified" data-i18n="ui.shared_cycles">Shared schedule</option>
                 </select></span>
               </label>
+              <label class="field plan-upstream-field"> <span data-i18n="ui.follow_upstream_resets">Follow upstream resets</span>
+                <span class="native-select mask-select"><select id="plan-upstream"> <option value="" data-i18n="ui.do_not_follow">Off</option> </select></span>
+                <span class="small muted" data-i18n="ui.follow_upstream_resets_hint">When this Codex auth file resets its limits early, quota windows with the same period, such as 5 hours or 7 days, reset their usage. Shared schedules also follow its reset times.</span>
+              </label>
             </div>
             <div class="row spread plan-windows-heading">
               <span class="small muted" data-i18n="ui.quota_windows">Quota windows</span>
@@ -2978,7 +2984,7 @@
         }
       };
       // These are also page dependencies, even when the editor is still closed.
-      const EDITOR_RESOURCES = { plan: ["keys", "plans"], route: ["keys", "routes", "credentials", "models"] };
+      const EDITOR_RESOURCES = { plan: ["keys", "plans", "credentials"], route: ["keys", "routes", "credentials", "models"] };
 
       // A query caches one explicit selection. Changing that selection or starting
       // a new session discards the result; elapsed time never invalidates it.
@@ -6793,6 +6799,8 @@
               );
               if (window.cycle_anchor_at)
                 quotas.append(el("span", { class: "small muted", text: m("ui.next_reset_value", { v0: when(nextCycleStart(window)) }) }));
+              if (plan.upstream_reset?.windows?.some((upstream) => upstream.period_seconds === window.period_seconds))
+                quotas.append(el("span", { class: "tag info", text: m("ui.follows_upstream") }));
               const field = settingsEntryField(window.name + DISPLAY_SEPARATOR + periodLabel(window.period_seconds), quotas);
               field.classList.add("plan-window-summary");
               return field;
@@ -6804,6 +6812,7 @@
                   m("ui.cycle_mode"),
                   el("span", { text: plan.windows[0]?.cycle_anchor_at ? m("ui.shared_cycles") : m("ui.independent_cycles") })
                 ),
+                plan.upstream_reset ? planUpstreamField(plan) : null,
                 ...windows,
                 boundKeyField(boundKeys)
               ],
@@ -6826,6 +6835,51 @@
             );
           }
         });
+      }
+
+      function planUpstreamField(plan) {
+        const follow = plan.upstream_reset;
+        const status = plan.upstream_status || {};
+        const credential = (resources.admin.credentials.value || []).find((item) => item.ref === follow.credential);
+        const error = window.billingI18n.serverMessage(status.error_message, status.error || "");
+        const button = el("button", {
+          type: "button",
+          class: "link small",
+          text: m("ui.check_now"),
+          onclick: async () => {
+            button.disabled = true;
+            try {
+              const result = await mutateAdmin("POST", "/plans/upstream-sync", { id: plan.id });
+              const checked = requireArray(result.plans, m("ui.subscription_plans")).find((item) => item.id === plan.id)?.upstream_status;
+              if (checked?.error) notify(window.billingI18n.serverMessage(checked.error_message, checked.error), "err");
+              else notify(m("ui.upstream_quota_checked"));
+            } catch (failure) { fail(failure); } finally { button.disabled = false; }
+          }
+        });
+        return settingsEntryField(
+          m("ui.follow_upstream_resets"),
+          el(
+            "div",
+            { class: "plan-upstream-status" },
+            settingsChipList([
+              {
+                text: credential
+                  ? maskedTailText(credential.provider, credentialName(credential))
+                  : m("ui.unknown_upstream_auth_file_value", { v0: follow.credential.slice(-8) }),
+                iconName: "file-key"
+              }
+            ]),
+            el("span", {
+              class: "small muted",
+              text: status.checked_at ? m("ui.checked_at_value", { v0: when(status.checked_at) }) : m("ui.not_checked_yet")
+            }),
+            follow.last_reset_at
+              ? el("span", { class: "small muted", text: m("ui.last_followed_reset_value", { v0: when(follow.last_reset_at) }) })
+              : null,
+            error ? el("span", { class: "small field-error", text: error }) : null,
+            button
+          )
+        );
       }
 
       function renderDataPending(target, sources, message = m("ui.loading"), className = "empty") {
@@ -8756,6 +8810,7 @@
           setText($("plan-save"), current ? m("ui.save") : m("ui.create"));
           $("plan-name").value = current?.name || "";
           $("plan-cycle-mode").value = current?.windows[0]?.cycle_anchor_at ? "unified" : "independent";
+          renderPlanUpstreamOptions(data.credentials, current?.upstream_reset?.credential || "");
           $("plan-windows").replaceChildren();
           (current ? current.windows : [{}]).forEach(addPlanWindow);
           renderPlanKeyList(id || "", data);
@@ -8764,6 +8819,27 @@
             scopes: selectedKeyScopes("plan-key-list")
           };
         });
+      }
+
+      function renderPlanUpstreamOptions(credentials, selected) {
+        const options = credentials.filter((item) => item.source === "auth-files" && item.provider === "codex");
+        const select = $("plan-upstream");
+        select.replaceChildren(
+          el("option", { value: "", text: m("ui.do_not_follow") }),
+          ...options.map((item) =>
+            el("option", {
+              value: item.ref,
+              disabled: item.disabled && item.ref !== selected,
+              text: item.disabled
+                ? m("ui.join", { v0: credentialName(item), v1: DISPLAY_SEPARATOR, v2: m("ui.disabled") })
+                : credentialName(item)
+            })
+          ),
+          selected && !options.some((item) => item.ref === selected)
+            ? el("option", { value: selected, text: m("ui.unknown_upstream_auth_file_value", { v0: selected.slice(-8) }) })
+            : null
+        );
+        select.value = selected;
       }
 
       function sameScopes(left, right) { return JSON.stringify([...left].sort()) === JSON.stringify([...right].sort()); }
@@ -8814,7 +8890,12 @@
           firstInvalid.focus();
           return null;
         }
-        return { name: $("plan-name").value.trim(), windows, scopes: selectedKeyScopes("plan-key-list") };
+        return {
+          name: $("plan-name").value.trim(),
+          windows,
+          upstream_reset: { credential: $("plan-upstream").value },
+          scopes: selectedKeyScopes("plan-key-list")
+        };
       }
 
       let priceReferenceTimer = 0;
@@ -9313,6 +9394,7 @@
           if (id && sameScopes(plan.scopes, editor.initial.scopes)) delete plan.scopes;
           if (id && plan.name === existing.name) delete plan.name;
           if (id && JSON.stringify(plan.windows) === JSON.stringify(existing.windows)) delete plan.windows;
+          if (plan.upstream_reset.credential === (existing?.upstream_reset?.credential || "")) delete plan.upstream_reset;
           if (id && !Object.keys(plan).length) return;
           if (id) await mutateAdmin("PATCH", "/plans", { id, ...plan }); else await mutateAdmin("POST", "/plans", plan);
           notify(id ? m("ui.subscription_plan_saved") : m("ui.subscription_plan_created"));

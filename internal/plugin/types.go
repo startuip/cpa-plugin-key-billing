@@ -135,6 +135,7 @@ type RequestInterceptRequest struct {
 	Model          string         `json:"Model"`
 	RequestedModel string         `json:"RequestedModel"`
 	Metadata       map[string]any `json:"Metadata"`
+	HostCallbackID string         `json:"host_callback_id,omitempty"`
 }
 
 type RequestInterceptResponse struct {

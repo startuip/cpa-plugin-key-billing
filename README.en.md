@@ -14,6 +14,7 @@
 ## Features
 
 - Set spending, token, and request quotas for each API key, with independent or shared reset schedules.
+- Follow the quota resets of a Codex upstream account, so an early upstream reset also resets downstream quotas.
 - Apply separate rates to requests that exceed a long-context input threshold.
 - Limit concurrent requests per API key.
 - Control access to models and upstream credentials with routing rules.
@@ -122,6 +123,7 @@ http(s)://<CLIProxyAPI address>/v0/resource/plugins/cpa-key-billing/ui#account
 - A plan can contain multiple quota windows. Each window can limit spending in USD, tokens, requests, or any combination of the three.
 - Usage is tracked separately for each key, even when keys share a plan. Independent cycles start when the first request is admitted. Shared cycles use the configured schedule for every bound key.
 - A manual quota reset keeps shared reset times unchanged. Independent cycles restart when the next request is admitted.
+- A subscription plan can follow the quota resets of one Codex auth file. The plugin checks that account's limits when admitting requests and when quotas are viewed, at most once every 5 minutes per account. After an early upstream reset, quota windows with the same period, such as 5 hours or 7 days, reset their usage, and shared schedules move to the upstream reset times.
 - Custom model prices take precedence over models.dev reference prices. Requests are rejected if neither is available.
 - Request events are retained for 365 days.
 

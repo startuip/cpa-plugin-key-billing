@@ -56,6 +56,9 @@ func (a *App) createPlan(req ManagementRequest) ManagementResponse {
 	if errDecode := decodeStrict(req.Body, &body); errDecode != nil {
 		return errorResponse(errDecode)
 	}
+	if response := a.validateUpstreamCredential(body.UpstreamReset, ""); response != nil {
+		return *response
+	}
 	stored, errCreate := a.store.CreatePlanWithBindings(body.Plan, body.Scopes)
 	if errCreate != nil {
 		return errorResponse(errCreate)
@@ -70,6 +73,9 @@ func (a *App) updatePlan(req ManagementRequest) ManagementResponse {
 	}
 	if errDecode := decodeStrict(req.Body, &body); errDecode != nil {
 		return errorResponse(errDecode)
+	}
+	if response := a.validateUpstreamCredential(body.UpstreamReset, strings.TrimSpace(body.ID)); response != nil {
+		return *response
 	}
 	stored, errUpdate := a.store.UpdatePlanWithBindings(body.PlanPatch, body.Scopes)
 	if errUpdate != nil {

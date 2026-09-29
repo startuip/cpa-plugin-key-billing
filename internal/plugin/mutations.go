@@ -27,10 +27,10 @@ func (a *App) mutateWithView(req ManagementRequest, path string, handle func(*Ap
 	}
 	view := map[string]any{}
 	switch path {
-	case routePlans, routeRoutes, routeKeysBind, routeKeysUnbind, routeKeysReset, routeKeysLabel, routeKeysConcurrency, routeKeysRoutes:
+	case routePlans, routePlansUpstreamSync, routeRoutes, routeKeysBind, routeKeysUnbind, routeKeysReset, routeKeysLabel, routeKeysConcurrency, routeKeysRoutes:
 		view["keys"] = a.keyRows()
-		if path == routePlans {
-			view["plans"] = a.store.Plans()
+		if path == routePlans || path == routePlansUpstreamSync {
+			view["plans"] = a.planRows()
 		}
 		if path == routeRoutes || path == routeKeysRoutes {
 			view["routes"] = a.routeRows()

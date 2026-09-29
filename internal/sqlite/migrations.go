@@ -11,7 +11,7 @@ import (
 	"cpa-key-billing/internal/billing"
 )
 
-func migrateToV17(tx *sql.Tx, version int) error {
+func migrateToV18(tx *sql.Tx, version int) error {
 	var steps []func(*sql.Tx) error
 	switch version {
 	case 10:
@@ -31,11 +31,22 @@ func migrateToV17(tx *sql.Tx, version int) error {
 	if version <= 15 {
 		steps = append(steps, migrateRequestErrorReason)
 	}
-	steps = append(steps, migrateUpstreamResponseReports)
+	if version <= 16 {
+		steps = append(steps, migrateUpstreamResponseReports)
+	}
+	steps = append(steps, migratePlanUpstreamResets)
 	for _, step := range steps {
 		if err := step(tx); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// Plans saved before schema 18 follow no upstream auth file.
+func migratePlanUpstreamResets(tx *sql.Tx) error {
+	if _, err := tx.Exec("ALTER TABLE plans ADD COLUMN upstream_reset_json TEXT NOT NULL DEFAULT ''"); err != nil {
+		return fmt.Errorf("Add subscription plan upstream reset following: %w", err)
 	}
 	return nil
 }

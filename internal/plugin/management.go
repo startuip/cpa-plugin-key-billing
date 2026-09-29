@@ -27,6 +27,7 @@ const (
 	routeReferencePricesStatus  = "/prices/reference/status"
 	routeReferencePricesRefresh = "/prices/reference/refresh"
 	routePlans                  = "/plans"
+	routePlansUpstreamSync      = "/plans/upstream-sync"
 	routeRoutes                 = "/routes"
 	routeKeysRoutes             = "/keys/routes"
 	routeKeysBind               = "/keys/bind"
@@ -52,11 +53,13 @@ type managementEndpoint struct {
 }
 
 var managementEndpoints = []managementEndpoint{
-	{http.MethodGet, routeKeys, "View API key status", func(a *App, _ ManagementRequest) ManagementResponse {
+	{http.MethodGet, routeKeys, "View API key status", func(a *App, req ManagementRequest) ManagementResponse {
+		a.followUpstreamResets(req.HostCallbackID, a.store.UpstreamCredentials(""), false)
 		return JSONResponse(http.StatusOK, map[string]any{"keys": a.keyRows()})
 	}},
-	{http.MethodGet, routePlans, "View subscription plans", func(a *App, _ ManagementRequest) ManagementResponse {
-		return JSONResponse(http.StatusOK, map[string]any{"plans": a.store.Plans()})
+	{http.MethodGet, routePlans, "View subscription plans", func(a *App, req ManagementRequest) ManagementResponse {
+		a.followUpstreamResets(req.HostCallbackID, a.store.UpstreamCredentials(""), false)
+		return JSONResponse(http.StatusOK, map[string]any{"plans": a.planRows()})
 	}},
 	{http.MethodGet, routeRoutes, "View routing rules", func(a *App, _ ManagementRequest) ManagementResponse {
 		return JSONResponse(http.StatusOK, map[string]any{"routes": a.routeRows()})
@@ -71,6 +74,7 @@ var managementEndpoints = []managementEndpoint{
 	{http.MethodPost, routePlans, "Create subscription plan", (*App).createPlan},
 	{http.MethodPatch, routePlans, "Update subscription plan", (*App).updatePlan},
 	{http.MethodDelete, routePlans, "Delete subscription plan and unbind API keys", (*App).deletePlan},
+	{http.MethodPost, routePlansUpstreamSync, "Check the followed upstream auth file for quota resets", (*App).syncPlanUpstreamReset},
 	{http.MethodPost, routeRoutes, "Create routing rule", (*App).createRoute},
 	{http.MethodPatch, routeRoutes, "Update routing rule", (*App).updateRoute},
 	{http.MethodDelete, routeRoutes, "Delete routing rule and remove its bindings", (*App).deleteRoute},
@@ -106,9 +110,7 @@ var resourceEndpoints = []resourceEndpoint{
 	{routeProfile, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {
 		return a.accountProfile(access)
 	}},
-	{routeSubscription, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {
-		return a.accountSubscription(access)
-	}},
+	{routeSubscription, (*App).accountSubscription},
 	{routeRouting, func(a *App, _ ManagementRequest, access viewAccess) ManagementResponse {
 		return a.accountRouting(access)
 	}},

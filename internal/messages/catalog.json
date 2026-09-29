@@ -589,5 +589,33 @@
   "A credential category cannot be both allowed and denied": {
     "key": "backend.category_permission_conflict",
     "formats": []
+  },
+  "Invalid upstream auth file for reset following": {
+    "key": "backend.invalid_upstream_auth_file_for_reset_following",
+    "formats": []
+  },
+  "Invalid upstream reset following data": {
+    "key": "backend.invalid_upstream_reset_following_data",
+    "formats": []
+  },
+  "Only Codex auth files can be followed for quota resets": {
+    "key": "backend.only_codex_auth_files_can_be_followed_for_quota_resets",
+    "formats": []
+  },
+  "The followed auth file is disabled": {
+    "key": "backend.the_followed_auth_file_is_disabled",
+    "formats": []
+  },
+  "The followed auth file does not exist": {
+    "key": "backend.the_followed_auth_file_does_not_exist",
+    "formats": []
+  },
+  "Codex returned no rate-limit windows": {
+    "key": "backend.codex_returned_no_rate_limit_windows",
+    "formats": []
+  },
+  "The subscription plan does not follow an upstream auth file": {
+    "key": "backend.the_subscription_plan_does_not_follow_an_upstream_auth_file",
+    "formats": []
   }
 }

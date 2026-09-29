@@ -262,6 +262,27 @@ PLANS = [
     {"id": "project-credit", "name": "项目额度", "windows": [
         {"id": "budget", "name": "项目预算", "amount_usd": 100, "period_seconds": 864000},
     ]},
+    {"id": "codex-weekly", "name": "Codex 周卡", "windows": [
+        {"id": "short", "name": "5 小时", "amount_usd": 5, "period_seconds": 18000,
+         "cycle_anchor_at": iso(NOW + timedelta(hours=3, minutes=12, seconds=41))},
+        {"id": "weekly", "name": "每周", "amount_usd": 40, "period_seconds": 604800,
+         "cycle_anchor_at": iso(NOW + timedelta(days=4, hours=6, minutes=12, seconds=41))},
+     ], "upstream_reset": {
+        "credential": "sha256:" + "a" * 64,
+        "windows": [
+            {"period_seconds": 18000, "reset_at": iso(NOW + timedelta(hours=3, minutes=12, seconds=41)),
+             "used_percent": 12, "observed_at": iso(NOW - timedelta(minutes=3))},
+            {"period_seconds": 604800, "reset_at": iso(NOW + timedelta(days=4, hours=6, minutes=12, seconds=41)),
+             "used_percent": 37, "observed_at": iso(NOW - timedelta(minutes=3))},
+        ],
+        "last_reset_at": iso(NOW - timedelta(days=2, hours=5)),
+     }, "upstream_status": {"checked_at": iso(NOW - timedelta(minutes=3))}},
+    {"id": "codex-backup", "name": "Codex 备用", "windows": [
+        {"id": "weekly", "name": "每周", "amount_usd": 20, "period_seconds": 604800},
+     ], "upstream_reset": {"credential": "sha256:" + "9" * 64},
+     "upstream_status": {"error": "Upstream returned HTTP 401: Credentials are invalid or expired: Your authentication token has expired. Please try signing in again.",
+                         "error_message": {"message_key": "backend.upstream_credentials_invalid_detail",
+                                           "message_params": {"v0": "401", "v1": "Your authentication token has expired. Please try signing in again."}}}},
 ]
 
 
@@ -1386,10 +1407,10 @@ class Handler(BaseHTTPRequestHandler):
         if 200 <= status < 300 and getattr(self, "mutation_view", None) is not None:
             path = urlparse(self.path).path
             view = {}
-            if path in {f"{API_BASE}/plans", f"{API_BASE}/routes"} or path.startswith(f"{API_BASE}/keys/"):
+            if path in {f"{API_BASE}/plans", f"{API_BASE}/plans/upstream-sync", f"{API_BASE}/routes"} or path.startswith(f"{API_BASE}/keys/"):
                 refresh_route_counts()
                 view["keys"] = key_rows()
-                if path == f"{API_BASE}/plans":
+                if path in {f"{API_BASE}/plans", f"{API_BASE}/plans/upstream-sync"}:
                     view["plans"] = PLANS
                 if path in {f"{API_BASE}/routes", f"{API_BASE}/keys/routes"}:
                     view["routes"] = route_rows()
@@ -1674,6 +1695,13 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(404, {"error": {"message": "dummy backend: plan not found"}})
                 return
             stored.update({key: body[key] for key in ("name", "windows") if key in body})
+            credential = (body.get("upstream_reset") or {}).get("credential", "")
+            if "upstream_reset" in body and not credential:
+                stored.pop("upstream_reset", None)
+                stored.pop("upstream_status", None)
+            elif credential and stored.get("upstream_reset", {}).get("credential") != credential:
+                stored["upstream_reset"] = {"credential": credential}
+                stored["upstream_status"] = {}
             for index, window in enumerate(stored["windows"]):
                 window.setdefault("id", str(time.time_ns()) + "-" + str(index))
             stored["windows"].sort(key=lambda window: window["period_seconds"])
@@ -1706,6 +1734,15 @@ class Handler(BaseHTTPRequestHandler):
                     break
             refresh_route_counts()
             self.send_json(200, {"ok": True})
+        elif route == ("POST", f"{API_BASE}/plans/upstream-sync"):
+            body = json.loads(request_body or b"{}")
+            stored = next((item for item in PLANS if item["id"] == body.get("id") and item.get("upstream_reset")), None)
+            if stored is None:
+                self.send_json(404, {"error": {"message": "The subscription plan does not follow an upstream auth file"}})
+                return
+            if not stored["upstream_status"].get("error"):
+                stored["upstream_status"] = {"checked_at": iso(datetime.now(timezone.utc).replace(microsecond=0))}
+            self.send_json(200, {"plans": PLANS})
         elif route == ("DELETE", f"{API_BASE}/plans"):
             plan_id = parse_qs(parsed.query).get("id", [""])[0]
             PLANS[:] = [plan for plan in PLANS if plan["id"] != plan_id]

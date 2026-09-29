@@ -54,10 +54,11 @@ CREATE TABLE config_credentials (
 );
 
 CREATE TABLE plans (
-	position        INTEGER PRIMARY KEY,
-	id              TEXT    NOT NULL UNIQUE,
-	name            TEXT    NOT NULL DEFAULT '',
-	windows_json    TEXT    NOT NULL
+	position             INTEGER PRIMARY KEY,
+	id                   TEXT    NOT NULL UNIQUE,
+	name                 TEXT    NOT NULL DEFAULT '',
+	windows_json         TEXT    NOT NULL,
+	upstream_reset_json  TEXT    NOT NULL DEFAULT ''
 );
 
 CREATE TABLE prices (
